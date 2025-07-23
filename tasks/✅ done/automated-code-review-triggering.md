@@ -12,10 +12,10 @@ description: 'Develop a system to automatically trigger code reviews by agents (
 
   '
 agent: CODEFORGE
-status: blocked
+status: complete
 priority: high
 created_at: '2025-07-23T20:10:34.053990+00:00'
-updated_at: '2025-07-24T06:10:34.116902'
+updated_at: '2025-07-24T07:45:13.768553'
 due_date: null
 dependencies:
 - implement-api-task-triggering
@@ -27,7 +27,10 @@ notes: 'This task will involve setting up GitHub webhooks or similar mechanisms 
 
   Consider how to pass relevant context (PR URL, commit SHA) to the review agent.
 
-  '
+
+
+  [2025-07-24T07:34:33.991322] Status changed from blocked to todo: Automatically
+  moved to TODO - dependency integrate-claude-code-base-action completed'
 estimated_hours: 4.0
 actual_hours: null
 assignee: null
@@ -36,6 +39,9 @@ tags:
 - code-review
 - github-actions
 - agent-integration
+status_timestamps:
+  todo: '2025-07-24T07:34:33.991325+00:00'
+  complete: '2025-07-23T21:45:13.768550+00:00'
 ---
 
 ## Description
@@ -52,4 +58,6 @@ This task will involve setting up GitHub webhooks or similar mechanisms to liste
 for events, and then using the task management API to create and manage review tasks.
 Consider how to pass relevant context (PR URL, commit SHA) to the review agent.
 
+
+[2025-07-24T07:34:33.991322] Status changed from blocked to todo: Automatically moved to TODO - dependency integrate-claude-code-base-action completed
 

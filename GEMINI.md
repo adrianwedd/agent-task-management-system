@@ -73,6 +73,18 @@ When creating or modifying tasks, adhere to the following rules:
 -   **Agent Assignment**: Ensure the assigned `agent` aligns with the task's `title` and `description`. For example, tasks involving 'implement', 'develop', 'code', or 'build' should ideally be assigned to `CODEFORGE`.
 -   **Timestamp Consistency**: `created_at` and `updated_at` timestamps should accurately reflect the task's history and not be in the future.
 
+## File Modification Strategy
+
+- **Prioritize `read_file`:** Before any `replace` operation, *always* use `read_file` to get the exact, current content of the target file. This ensures the `old_string` provided to `replace` is an exact match.
+- **Precision with `replace`:**
+    - For single-line changes, ensure the `old_string` includes surrounding context (e.g., the entire line, or a few characters before and after the target text) to make it unique.
+    - For multi-line changes, the `old_string` *must* include all lines, including whitespace and indentation, that are to be replaced. Provide at least 3 lines of context before and after the target text.
+- **Handling Syntax Errors/Corruption:**
+    - If a file becomes syntactically invalid or corrupted, the immediate action should be to **revert to a known good state** using `git restore <file_path>`.
+    - **Do NOT attempt to fix syntax errors iteratively with `replace` on a corrupted file.**
+    - Once reverted, re-evaluate the change. For substantial changes or when `replace` proves too difficult/risky, consider using `write_file` with the *entire* correct content of the file. This ensures a clean slate.
+- **Post-Modification Verification:** After *any* file modification, immediately run relevant linters, formatters, and tests (if applicable) to catch errors early and confirm the change's correctness.
+
 ## Current Status
 The system is described as "✅ COMPLETE" as of July 23, 2025, with 98+ tasks managed across 28+ agents.
 - **Known Issues/Limitations:**

@@ -13,10 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+from rich.console import Console
+from rich.table import Table
+
 from .task_manager import TaskManager, TaskStatus, TaskPriority
 from .task_validator import TaskValidator
 from .task_analytics import TaskAnalytics
 from .task_templates import TaskTemplates
+from .changelog_generator import ChangelogGenerator
 from utils.logger import logger, setup_logging
 
 # Initialize enhanced logging for CLI
@@ -28,9 +32,10 @@ class TaskCLI:
     
     def __init__(self, tasks_root: str = "tasks"):
         self.task_manager = TaskManager(tasks_root)
-        self.validator = TaskValidator()
+        self.validator = TaskValidator(task_manager=self.task_manager)
         self.analytics = TaskAnalytics(self.task_manager.tasks_cache)
         self.templates = TaskTemplates()
+        self.changelog_generator = ChangelogGenerator(self.task_manager)
     
     def create_task(self, args) -> None:
         """Create a new task"""
@@ -129,6 +134,27 @@ class TaskCLI:
             else:
                 logger.error(f"❌ Failed to add note to task {args.task_id}")
             print(f"❌ Failed to add note to task {args.task_id}")
+
+    def update_task(self, args) -> None:
+        """Update task fields."""
+        updates = {}
+        if args.title: updates['title'] = args.title
+        if args.description: updates['description'] = args.description
+        if args.agent: updates['agent'] = args.agent
+        if args.priority: updates['priority'] = TaskPriority(args.priority)
+        if args.estimated_hours: updates['estimated_hours'] = args.estimated_hours
+        if args.due_date: updates['due_date'] = datetime.fromisoformat(args.due_date)
+        if args.tags: updates['tags'] = args.tags.split(',')
+        if args.dependencies: updates['dependencies'] = args.dependencies.split(',')
+
+        success = self.task_manager.update_task_fields(args.task_id, **updates)
+
+        if success:
+            logger.info(f"Updated task {args.task_id}")
+            print(f"✅ Updated task {args.task_id}")
+        else:
+            logger.error(f"Failed to update task {args.task_id}")
+            print(f"❌ Failed to update task {args.task_id}")
     
     def list_tasks(self, args) -> None:
         """List tasks with optional filters"""
@@ -169,6 +195,16 @@ class TaskCLI:
             tasks.sort(key=lambda t: t.updated_at or datetime.min)
         
         # Display tasks
+        if args.blockers:
+            blocking_tasks = self.task_manager.get_blocking_tasks()
+            if blocking_tasks:
+                print("🔗 Tasks Blocking Others:")
+                for task in blocking_tasks:
+                    print(f"  🔗 {task.id}: {task.title} ({task.agent})")
+            else:
+                print("No tasks are currently blocking others.")
+            return
+
         if not tasks:
             if hasattr(logger, 'query_result'):
                 logger.query_result("No tasks found matching criteria")
@@ -218,8 +254,14 @@ class TaskCLI:
         if task.notes:
             print(f"\nNotes:\n{task.notes}")
         
-        print(f"\nCreated: {task.created_at.strftime('%Y-%m-%d %H:%M')}")
-        print(f"Updated: {task.updated_at.strftime('%Y-%m-%d %H:%M')}")
+        if task.created_at:
+            print(f"\nCreated: {task.created_at.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            print("\nCreated: N/A")
+        if task.updated_at:
+            print(f"Updated: {task.updated_at.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            print("Updated: N/A")
         
         # Show validation if requested
         if args.validate:
@@ -227,6 +269,7 @@ class TaskCLI:
     
     def validate_tasks(self, args) -> None:
         """Validate tasks"""
+        self.task_manager.load_all_tasks() # Reload tasks to ensure up-to-date cache
         if args.task_id:
             self._validate_task(args.task_id)
         else:
@@ -327,8 +370,8 @@ class TaskCLI:
             if task.status == TaskStatus.TODO and task.dependencies:
                 # Check if dependencies are satisfied
                 deps_satisfied = all(
-                    self.task_manager.get_task(dep_id) and 
-                    self.task_manager.get_task(dep_id).status == TaskStatus.COMPLETE
+                    (dep_task := self.task_manager.get_task(dep_id)) is not None and 
+                    dep_task.status == TaskStatus.COMPLETE
                     for dep_id in task.dependencies
                 )
                 
@@ -340,6 +383,50 @@ class TaskCLI:
                     logger.info(f"Auto-fixed task {task.id} status: {old_status} -> blocked (dependencies not satisfied)")
         
         return fixes
+
+    def update_blockers(self, args) -> None:
+        """Update the status of tasks that are blocking others."""
+        updated_tasks = self.task_manager.update_blocking_task_statuses()
+        if updated_tasks:
+            logger.info(f"Updated {len(updated_tasks)} tasks to BLOCKED_BY status.")
+            print(f"Updated {len(updated_tasks)} tasks to BLOCKED_BY status:")
+            for task_id in updated_tasks:
+                print(f"  - {task_id}")
+        else:
+            logger.info("No tasks found to update to BLOCKED_BY status.")
+            print("No tasks found to update to BLOCKED_BY status.")
+
+    def generate_changelog(self, args) -> None:
+        """Generate project changelog."""
+        changelog_content = self.changelog_generator.generate_changelog()
+        with open(args.output, 'w') as f:
+            f.write(changelog_content)
+        logger.info(f"Changelog generated to {args.output}")
+        print(f"✅ Changelog generated to {args.output}")
+
+    def promote_dependencies(self, args) -> None:
+        """Promote priority of tasks that are blocking others."""
+        promoted_tasks = self.task_manager.promote_dependency_priority()
+        if promoted_tasks:
+            logger.info(f"Promoted {len(promoted_tasks)} tasks: {', '.join(promoted_tasks)}")
+            print(f"✅ Promoted {len(promoted_tasks)} tasks:")
+            for task_id in promoted_tasks:
+                print(f"  • {task_id}")
+        else:
+            logger.info("No tasks found to promote.")
+            print("No tasks found to promote.")
+
+    def assign_due_dates(self, args) -> None:
+        """Assigns due dates to critical priority tasks missing them."""
+        updated_tasks = self.task_manager.assign_due_dates_to_critical_tasks()
+        if updated_tasks:
+            logger.info(f"Assigned due dates to {len(updated_tasks)} critical tasks.")
+            print(f"✅ Assigned due dates to {len(updated_tasks)} critical tasks:")
+            for task_id in updated_tasks:
+                print(f"  • {task_id}")
+        else:
+            logger.info("No critical tasks found missing due dates.")
+            print("No critical tasks found missing due dates.")
     
     def show_analytics(self, args) -> None:
         """Show task analytics"""
@@ -477,7 +564,7 @@ class TaskCLI:
         """List available task templates"""
         templates = self.templates.list_templates(
             agent=args.agent,
-            tags=args.tags.split(',') if args.tags else None
+            tags=args.tags.split(',') if args.tags else []
         )
         
         if not templates:
@@ -552,32 +639,54 @@ class TaskCLI:
             print("No tasks ready for auto-transition")
     
     def _display_tasks_table(self, tasks) -> None:
-        """Display tasks in table format"""
+        """Display tasks in table format using rich."""
         if not tasks:
             return
-        
-        # Calculate column widths
-        id_width = max(len("ID"), max(len(t.id) for t in tasks))
-        title_width = max(len("Title"), max(len(t.title[:40]) for t in tasks))
-        agent_width = max(len("Agent"), max(len(t.agent) for t in tasks))
-        status_width = max(len("Status"), max(len(t.status.value) for t in tasks))
-        
-        # Header
-        header = f"{'ID':<{id_width}} {'Title':<{title_width}} {'Agent':<{agent_width}} {'Status':<{status_width}} Priority"
-        print(header)
-        print("-" * len(header))
-        
-        # Rows
-        for task in tasks:
-            title_truncated = task.title[:40] + "..." if len(task.title) > 40 else task.title
-            print(f"{task.id:<{id_width}} {title_truncated:<{title_width}} {task.agent:<{agent_width}} {task.status.value:<{status_width}} {task.priority.value}")
-    
-    def _display_tasks_list(self, tasks) -> None:
-        """Display tasks in list format"""
+
+        console = Console()
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("ID", style="dim", width=12)
+        table.add_column("Title", min_width=20)
+        table.add_column("Agent", justify="right")
+        table.add_column("Status", justify="right")
+        table.add_column("Priority", justify="right")
+
         for task in tasks:
             status_icon = {
                 TaskStatus.PENDING: "⏳",
                 TaskStatus.BLOCKED: "🚫", 
+                TaskStatus.BLOCKED_BY: "🔗",
+                TaskStatus.TODO: "📋",
+                TaskStatus.IN_PROGRESS: "🔄",
+                TaskStatus.COMPLETE: "✅",
+                TaskStatus.CANCELLED: "❌"
+            }.get(task.status, "❓")
+            
+            priority_color = {
+                TaskPriority.CRITICAL: "red",
+                TaskPriority.HIGH: "yellow", 
+                TaskPriority.MEDIUM: "blue",
+                TaskPriority.LOW: "white"
+            }.get(task.priority, "white")
+
+            table.add_row(
+                task.id,
+                task.title,
+                task.agent,
+                f"{status_icon} {task.status.value}",
+                f"[{priority_color}]{task.priority.value}[/{priority_color}]"
+            )
+        
+        console.print(table)
+    
+    def _display_tasks_list(self, tasks) -> None:
+        """Display tasks in list format"""
+        console = Console()
+        for task in tasks:
+            status_icon = {
+                TaskStatus.PENDING: "⏳",
+                TaskStatus.BLOCKED: "🚫", 
+                TaskStatus.BLOCKED_BY: "🔗",
                 TaskStatus.TODO: "📋",
                 TaskStatus.IN_PROGRESS: "🔄",
                 TaskStatus.COMPLETE: "✅",
@@ -591,7 +700,7 @@ class TaskCLI:
                 TaskPriority.LOW: "⚪"
             }.get(task.priority, "❓")
             
-            print(f"{status_icon} {priority_icon} {task.id}: {task.title} ({task.agent})")
+            console.print(f"{status_icon} {priority_icon} {task.id}: {task.title} ([bold]{task.agent}[/bold])")
     
     def _display_tasks_json(self, tasks) -> None:
         """Display tasks in JSON format"""
@@ -629,7 +738,19 @@ def main():
     add_note_parser = subparsers.add_parser('add-note', help='Add a note to a task')
     add_note_parser.add_argument('task_id', help='Task ID')
     add_note_parser.add_argument('note', help='The note to add')
-    
+
+    # Update task command
+    update_parser = subparsers.add_parser('update', help='Update task fields')
+    update_parser.add_argument('task_id', help='Task ID')
+    update_parser.add_argument('--title', help='New title')
+    update_parser.add_argument('--description', help='New description')
+    update_parser.add_argument('--agent', help='New agent')
+    update_parser.add_argument('--priority', choices=['low', 'medium', 'high', 'critical'], help='New priority')
+    update_parser.add_argument('--estimated-hours', type=float, help='New estimated hours')
+    update_parser.add_argument('--due-date', help='New due date (ISO format)')
+    update_parser.add_argument('--tags', help='New comma-separated tags')
+    update_parser.add_argument('--dependencies', help='New comma-separated dependency IDs')
+
     # List tasks command
     list_parser = subparsers.add_parser('list', help='List tasks')
     list_parser.add_argument('--agent', help='Filter by agent')
@@ -640,6 +761,7 @@ def main():
     list_parser.add_argument('--include-completed', action='store_true', help='Include completed tasks in output')
     list_parser.add_argument('--sort-by', choices=['priority', 'created', 'updated'], default='priority')
     list_parser.add_argument('--format', choices=['list', 'table', 'json'], default='list')
+    list_parser.add_argument('--blockers', action='store_true', help='Show tasks that are blocking other tasks')
     
     # Show task command
     show_parser = subparsers.add_parser('show', help='Show task details')
@@ -671,6 +793,19 @@ def main():
     auto_fix_parser = subparsers.add_parser('auto-fix', help='Automatically fix common task issues')
     auto_fix_parser.add_argument('--no-revalidate', action='store_true', 
                                 help='Skip re-validation after fixes')
+
+    # Update blockers command
+    update_blockers_parser = subparsers.add_parser('update-blockers', help='Update status of tasks that are blocking others')
+
+    # Generate changelog command
+    changelog_parser = subparsers.add_parser('generate-changelog', help='Generate project changelog')
+    changelog_parser.add_argument('--output', default='CHANGELOG.md', help='Output file path for changelog')
+
+    # Promote dependencies command
+    promote_deps_parser = subparsers.add_parser('promote-dependencies', help='Promote priority of tasks that are blocking others')
+
+    # Assign due dates command
+    assign_due_dates_parser = subparsers.add_parser('assign-due-dates', help='Assigns due dates to critical tasks missing them')
     
     args = parser.parse_args()
     
@@ -719,6 +854,14 @@ def main():
             cli.auto_transition(args)
         elif args.command == 'auto-fix':
             cli.auto_fix_tasks(args)
+        elif args.command == 'update-blockers':
+            cli.update_blockers(args)
+        elif args.command == 'generate-changelog':
+            cli.generate_changelog(args)
+        elif args.command == 'promote-dependencies':
+            cli.promote_dependencies(args)
+        elif args.command == 'assign-due-dates':
+            cli.assign_due_dates(args)
         
         if hasattr(logger, 'command_complete'):
             logger.command_complete(f"Command {args.command} completed successfully")

@@ -15,7 +15,7 @@ agent: CODEFORGE
 status: blocked
 priority: medium
 created_at: '2025-07-23T20:10:34.064921+00:00'
-updated_at: '2025-07-24T06:10:34.107381'
+updated_at: '2025-07-24T08:30:11.454147'
 due_date: null
 dependencies:
 - standardize-agent-naming-strategy
@@ -24,7 +24,18 @@ notes: 'This dictionary should be easily updatable without code changes (e.g., a
 
   It will serve as a central source of truth for agent specializations.
 
-  '
+
+
+  [2025-07-24T07:34:55.672997] Status changed from blocked to todo: Automatically
+  moved to TODO - dependency standardize-agent-naming-strategy completed
+
+
+  [2025-07-24T07:46:43.884717] Status changed from blocked to todo: Auto-transitioned:
+  dependencies satisfied
+
+
+  [2025-07-24T07:47:41.947250] Status changed from blocked to todo: Auto-transitioned:
+  dependencies satisfied'
 estimated_hours: 2.0
 actual_hours: null
 assignee: null
@@ -33,6 +44,9 @@ tags:
 - configuration
 - validation
 - data-quality
+status_timestamps:
+  todo: '2025-07-23T21:47:41.947248+00:00'
+  blocked: '2025-07-23T22:30:11.454145+00:00'
 ---
 
 ## Description
@@ -48,4 +62,10 @@ if a task's content matches the assigned agent's capabilities, reducing
 This dictionary should be easily updatable without code changes (e.g., a YAML file).
 It will serve as a central source of truth for agent specializations.
 
+
+[2025-07-24T07:34:55.672997] Status changed from blocked to todo: Automatically moved to TODO - dependency standardize-agent-naming-strategy completed
+
+[2025-07-24T07:46:43.884717] Status changed from blocked to todo: Auto-transitioned: dependencies satisfied
+
+[2025-07-24T07:47:41.947250] Status changed from blocked to todo: Auto-transitioned: dependencies satisfied
 

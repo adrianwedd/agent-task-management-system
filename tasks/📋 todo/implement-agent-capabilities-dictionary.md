@@ -1,52 +1,71 @@
 ---
 id: implement-agent-capabilities-dictionary
 title: Implement Configurable Agent Capabilities Dictionary
-description: |
-  Develop a configurable dictionary or mapping of agent capabilities to keywords
+description: 'Develop a configurable dictionary or mapping of agent capabilities to
+  keywords
+
   or task types. This will allow the validation system to more accurately assess
-  if a task's content matches the assigned agent's capabilities, reducing
-  'agent: Task content may not match agent capabilities' info messages.
+
+  if a task''s content matches the assigned agent''s capabilities, reducing
+
+  ''agent: Task content may not match agent capabilities'' info messages.
+
+  '
 agent: CODEFORGE
 status: todo
 priority: medium
-created_at: '2025-07-24T04:14:55.000000+00:00'
-updated_at: '2025-07-24T04:14:55.000000+00:00'
+created_at: '2025-07-23T20:10:34.064921+00:00'
+updated_at: '2025-07-24T07:47:41.947252'
 due_date: null
 dependencies:
-  - standardize-agent-naming-strategy
-tags:
-  - agent-management
-  - configuration
-  - validation
-  - data-quality
-notes: |
-  This dictionary should be easily updatable without code changes (e.g., a YAML file).
+- standardize-agent-naming-strategy
+notes: 'This dictionary should be easily updatable without code changes (e.g., a YAML
+  file).
+
   It will serve as a central source of truth for agent specializations.
+
+
+
+  [2025-07-24T07:34:55.672997] Status changed from blocked to todo: Automatically
+  moved to TODO - dependency standardize-agent-naming-strategy completed
+
+
+  [2025-07-24T07:46:43.884717] Status changed from blocked to todo: Auto-transitioned:
+  dependencies satisfied
+
+
+  [2025-07-24T07:47:41.947250] Status changed from blocked to todo: Auto-transitioned:
+  dependencies satisfied'
 estimated_hours: 2.0
 actual_hours: null
 assignee: null
+tags:
+- agent-management
+- configuration
+- validation
+- data-quality
+status_timestamps:
+  todo: '2025-07-23T21:47:41.947248+00:00'
+  blocked: '2025-07-23T21:47:41.945667+00:00'
 ---
 
-## Task Description
+## Description
 
-Implement a mechanism to define and manage agent capabilities through a configurable dictionary. This dictionary will map agent names to a set of keywords or descriptions that represent their expertise. The task validation system will then use this mapping to provide more intelligent feedback on agent assignments.
+Develop a configurable dictionary or mapping of agent capabilities to keywords
+or task types. This will allow the validation system to more accurately assess
+if a task's content matches the assigned agent's capabilities, reducing
+'agent: Task content may not match agent capabilities' info messages.
 
-## Acceptance Criteria
 
-- [ ] A new configuration file (e.g., `config/agent_capabilities.yaml`) is introduced to define agent capabilities.
-- [ ] The `TaskValidator` loads and utilizes this configuration.
-- [ ] The 'agent: Task content may not match agent capabilities' info messages are significantly reduced or eliminated for correctly assigned tasks.
-- [ ] The system can suggest more appropriate agents based on task content and the capabilities dictionary.
-- [ ] The capabilities dictionary is easily extensible and modifiable by users.
+## Notes
 
-## Implementation Steps
+This dictionary should be easily updatable without code changes (e.g., a YAML file).
+It will serve as a central source of truth for agent specializations.
 
-1.  **Create `config/agent_capabilities.yaml`**: Define a structure for mapping agents to capabilities (e.g., a list of keywords).
-2.  **Modify `TaskValidator`**: Update `_load_valid_agents` or create a new method to load the `agent_capabilities.yaml` file.
-3.  **Update `_validate_agent_assignment`**: Refine the logic in `TaskValidator` to use the new capabilities dictionary for more accurate matching.
-4.  **Integrate with `TaskTemplates`**: Potentially use this dictionary to suggest agents when creating tasks from templates.
-5.  **Test**: Verify that agent assignment validation is more accurate and that the info messages are reduced.
 
-## Dependencies
+[2025-07-24T07:34:55.672997] Status changed from blocked to todo: Automatically moved to TODO - dependency standardize-agent-naming-strategy completed
 
--   `standardize-agent-naming-strategy`: Ensures a consistent set of agent names to map capabilities to.
+[2025-07-24T07:46:43.884717] Status changed from blocked to todo: Auto-transitioned: dependencies satisfied
+
+[2025-07-24T07:47:41.947250] Status changed from blocked to todo: Auto-transitioned: dependencies satisfied
+

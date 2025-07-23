@@ -13,7 +13,7 @@ agent: CODEFORGE
 status: blocked
 priority: medium
 created_at: '2025-07-23T04:14:55.849991+00:00'
-updated_at: '2025-07-24T06:10:34.114923'
+updated_at: '2025-07-24T08:31:48.610339'
 due_date: null
 dependencies:
 - enhance-cli-user-experience
@@ -23,7 +23,10 @@ notes: 'The links should ideally be configurable to support different IDEs (e.g.
   and operating systems. A good default might be a `file://` URL or a custom scheme
   like `vscode://`.
 
-  '
+
+
+  [2025-07-24T07:35:05.913408] Status changed from blocked to todo: Automatically
+  moved to TODO - dependency enhance-cli-user-experience completed'
 estimated_hours: 1.5
 actual_hours: null
 assignee: null
@@ -32,6 +35,9 @@ tags:
 - ux
 - quality-of-life
 - ide-integration
+status_timestamps:
+  todo: '2025-07-24T07:35:05.913410+00:00'
+  blocked: '2025-07-23T22:31:48.610337+00:00'
 ---
 
 ## Description
@@ -46,4 +52,6 @@ This will significantly improve the user experience for navigating and editing t
 The links should ideally be configurable to support different IDEs (e.g., VS Code, IntelliJ)
 and operating systems. A good default might be a `file://` URL or a custom scheme like `vscode://`.
 
+
+[2025-07-24T07:35:05.913408] Status changed from blocked to todo: Automatically moved to TODO - dependency enhance-cli-user-experience completed
 

@@ -1,3 +1,4 @@
+
 """
 Task Validation System
 
@@ -9,9 +10,16 @@ import re
 from typing import List, Dict, Set, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+from enum import Enum
 
 from .task_manager import Task, TaskStatus, TaskPriority
-from utils.logger import logger
+from .config import MAX_TAGS, AGENT_CAPABILITIES, VALID_TAGS
+
+
+class ValidationSeverity(Enum):
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
 
 
 @dataclass
@@ -26,43 +34,15 @@ class ValidationError:
 class TaskValidator:
     """Validates tasks and task system integrity"""
     
-    def __init__(self):
-        self.agent_names = self._load_valid_agents()
-        self.validation_rules = self._initialize_validation_rules()
-    
-    def _load_valid_agents(self) -> Set[str]:
-        """Load valid agent names from the system"""
-        # Generic agent taxonomy for task management systems
-        return {
-            'DEVELOPER',      # Software development and implementation
-            'TESTER',         # Quality assurance and testing
-            'ARCHITECT',      # System design and architecture
-            'DEVOPS',         # Operations and deployment
-            'ANALYST',        # Analysis and research
-            'DESIGNER',       # UI/UX and design tasks
-            'DOCUMENTER',     # Documentation and content
-            'REVIEWER',       # Code and content review
-            'MANAGER',        # Project management and coordination
-            'RESEARCHER',     # Research and investigation
-            'SECURITY',       # Security analysis and implementation
-            'AUTOMATION',     # Process automation and tooling
-            
-            # Legacy agents (maintained for backward compatibility)
-            'CODEFORGE',      # Maps to DEVELOPER
-            'TESTCRAFTERPRO', # Maps to TESTER
-            'BUILDFLOW',      # Maps to DEVOPS
-            'AUTOSYNTH',      # Maps to AUTOMATION
-        }
-    
-    def _initialize_validation_rules(self) -> Dict[str, Any]:
-        """Initialize validation rules"""
-        return {
+    def __init__(self, task_manager):
+        self.task_manager = task_manager
+        self.validation_rules = {
             'id_pattern': re.compile(r'^[a-zA-Z0-9_-]+$'),
             'max_title_length': 100,
             'max_description_length': 5000,
             'required_fields': ['id', 'title', 'description', 'agent', 'status'],
             'max_dependencies': 10,
-            'max_tags': 5,
+            'max_tags': MAX_TAGS,
             'valid_tag_pattern': re.compile(r'^[a-zA-Z0-9_-]+$')
         }
     
@@ -157,10 +137,10 @@ class TaskValidator:
                 ))
             
             for tag in task.tags:
-                if not self.validation_rules['valid_tag_pattern'].match(tag):
+                if tag not in VALID_TAGS:
                     errors.append(ValidationError(
                         field='tags',
-                        message=f"Invalid tag format: '{tag}'. Tags must contain only letters, numbers, hyphens, and underscores",
+                        message=f"Invalid tag: '{tag}'.",
                         severity='warning',
                         task_id=task.id
                     ))
@@ -215,7 +195,7 @@ class TaskValidator:
         """Validate agent assignment with auto-migration suggestions"""
         errors = []
         
-        if task.agent and task.agent not in self.agent_names:
+        if task.agent and task.agent not in AGENT_CAPABILITIES:
             # Try to suggest an appropriate agent
             suggested_agent = self._suggest_agent_migration(task.agent, task)
             if suggested_agent:
@@ -228,33 +208,14 @@ class TaskValidator:
             else:
                 errors.append(ValidationError(
                     field='agent',
-                    message=f"Unknown agent '{task.agent}'. Valid agents: {', '.join(sorted(self._get_primary_agents()))}",
+                    message=f"Unknown agent '{task.agent}'. Valid agents: {', '.join(sorted(AGENT_CAPABILITIES.keys()))}",
                     severity='error',
                     task_id=task.id
                 ))
         
         # Validate agent-task compatibility
-        agent_task_compatibility = {
-            'DEVELOPER': ['implement', 'develop', 'code', 'build', 'programming', 'software'],
-            'TESTER': ['test', 'testing', 'qa', 'validation', 'quality'],
-            'ARCHITECT': ['design', 'architecture', 'system', 'structure', 'pattern'],
-            'DEVOPS': ['deploy', 'ops', 'ci/cd', 'pipeline', 'infrastructure'],
-            'ANALYST': ['analyze', 'analysis', 'research', 'investigate', 'study'],
-            'DESIGNER': ['design', 'ui', 'ux', 'interface', 'visual'],
-            'DOCUMENTER': ['document', 'docs', 'readme', 'guide', 'manual'],
-            'REVIEWER': ['review', 'audit', 'check', 'validate', 'inspect'],
-            'MANAGER': ['manage', 'coordinate', 'plan', 'organize', 'schedule'],
-            'RESEARCHER': ['research', 'investigate', 'study', 'explore', 'discover'],
-            'SECURITY': ['security', 'secure', 'audit', 'monitoring', 'vulnerability'],
-            'AUTOMATION': ['automate', 'script', 'tool', 'process', 'workflow'],
-            
-            # Legacy mappings
-            'CODEFORGE': ['implement', 'develop', 'code', 'build'],
-            'TESTCRAFTERPRO': ['test', 'testing', 'qa', 'validation'],
-        }
-        
-        if task.agent in agent_task_compatibility:
-            expected_keywords = agent_task_compatibility[task.agent]
+        if task.agent in AGENT_CAPABILITIES:
+            expected_keywords = AGENT_CAPABILITIES[task.agent]
             task_text = f"{task.title} {task.description}".lower()
             if not any(keyword in task_text for keyword in expected_keywords):
                 errors.append(ValidationError(
@@ -351,7 +312,7 @@ class TaskValidator:
             if not self.validation_rules['id_pattern'].match(dep_id):
                 errors.append(ValidationError(
                     field='dependencies',
-                    message=f"Invalid dependency ID format: '{dep_id}'",
+                    message=f"Invalid dependency ID format: '{dep_id}'.",
                     severity='error',
                     task_id=task.id
                 ))
@@ -400,20 +361,7 @@ class TaskValidator:
         # Fallback: analyze task content to suggest appropriate agent
         task_text = f"{task.title} {task.description}".lower()
         
-        content_mappings = {
-            'DEVELOPER': ['code', 'implement', 'develop', 'build', 'programming', 'software'],
-            'TESTER': ['test', 'testing', 'qa', 'validation', 'quality'],
-            'ARCHITECT': ['design', 'architecture', 'system', 'structure', 'pattern'],
-            'DEVOPS': ['deploy', 'ops', 'ci/cd', 'pipeline', 'infrastructure'],
-            'ANALYST': ['analyze', 'analysis', 'research', 'investigate', 'study'],
-            'DESIGNER': ['design', 'ui', 'ux', 'interface', 'visual'],
-            'DOCUMENTER': ['document', 'docs', 'readme', 'guide', 'manual'],
-            'REVIEWER': ['review', 'audit', 'check', 'validate', 'inspect'],
-            'MANAGER': ['manage', 'coordinate', 'plan', 'organize', 'schedule'],
-            'RESEARCHER': ['research', 'investigate', 'study', 'explore', 'discover'],
-            'SECURITY': ['security', 'secure', 'audit', 'monitoring', 'vulnerability'],
-            'AUTOMATION': ['automate', 'script', 'tool', 'process', 'workflow'],
-        }
+        content_mappings = AGENT_CAPABILITIES
         
         # Score each agent based on keyword matches
         agent_scores = {}
@@ -428,23 +376,18 @@ class TaskValidator:
         
         return 'DEVELOPER'  # Default fallback
     
-    def _get_primary_agents(self) -> Set[str]:
-        """Get the primary (non-legacy) agent names"""
-        legacy_agents = {'CODEFORGE', 'TESTCRAFTERPRO', 'BUILDFLOW', 'AUTOSYNTH'}
-        return self.agent_names - legacy_agents
-    
     def auto_fix_agent_issues(self, tasks: Dict[str, Task]) -> Dict[str, str]:
         """Automatically fix agent assignment issues and return mapping of changes"""
         fixes = {}
         
         for task in tasks.values():
-            if task.agent and task.agent not in self.agent_names:
+            if task.agent and task.agent not in AGENT_CAPABILITIES:
                 suggested_agent = self._suggest_agent_migration(task.agent, task)
                 if suggested_agent:
                     old_agent = task.agent
                     task.agent = suggested_agent
                     fixes[task.id] = f"{old_agent} -> {suggested_agent}"
-                    logger.info(f"Auto-migrated task {task.id} agent: {old_agent} -> {suggested_agent}")
+                    # logger.info(f"Auto-migrated task {task.id} agent: {old_agent} -> {suggested_agent}")
         
         return fixes
     
@@ -537,7 +480,7 @@ class TaskValidator:
         
         # Count active tasks per agent
         agent_workload = {}
-        for task in tasks.values():
+        for task in self.task_manager.tasks_cache.values():
             if task.status in [TaskStatus.TODO, TaskStatus.IN_PROGRESS]:
                 agent_workload[task.agent] = agent_workload.get(task.agent, 0) + 1
         
@@ -552,7 +495,7 @@ class TaskValidator:
         
         # Check for idle agents (no active tasks)
         active_agents = set(agent_workload.keys())
-        all_agents_with_tasks = set(task.agent for task in tasks.values())
+        all_agents_with_tasks = set(task.agent for task in self.task_manager.tasks_cache.values())
         idle_agents = all_agents_with_tasks - active_agents
         
         if idle_agents:

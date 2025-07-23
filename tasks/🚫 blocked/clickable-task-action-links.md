@@ -13,7 +13,7 @@ agent: CODEFORGE
 status: blocked
 priority: medium
 created_at: '2025-07-23T04:14:55.853792+00:00'
-updated_at: '2025-07-24T06:10:34.116017'
+updated_at: '2025-07-24T08:32:01.505379'
 due_date: null
 dependencies:
 - enhance-cli-user-experience
@@ -24,7 +24,10 @@ notes: 'This feature should consider how to represent different actions (e.g., i
 
   terminal capabilities for clickable text.
 
-  '
+
+
+  [2025-07-24T07:35:05.914446] Status changed from blocked to todo: Automatically
+  moved to TODO - dependency enhance-cli-user-experience completed'
 estimated_hours: 2.0
 actual_hours: null
 assignee: null
@@ -33,6 +36,9 @@ tags:
 - ux
 - automation
 - quality-of-life
+status_timestamps:
+  todo: '2025-07-24T07:35:05.914448+00:00'
+  blocked: '2025-07-23T22:32:01.505377+00:00'
 ---
 
 ## Description
@@ -48,4 +54,6 @@ This feature should consider how to represent different actions (e.g., icons, sh
 and how to generate the corresponding shell commands for execution. It might leverage
 terminal capabilities for clickable text.
 
+
+[2025-07-24T07:35:05.914446] Status changed from blocked to todo: Automatically moved to TODO - dependency enhance-cli-user-experience completed
 

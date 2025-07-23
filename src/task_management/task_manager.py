@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 
 from utils.logger import logger, audit_logger, performance_logger, log_performance
@@ -22,6 +22,7 @@ from utils.logger import logger, audit_logger, performance_logger, log_performan
 class TaskStatus(Enum):
     PENDING = "pending"
     BLOCKED = "blocked"
+    BLOCKED_BY = "blocked_by"
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     COMPLETE = "complete"
@@ -47,12 +48,13 @@ class Task:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     due_date: Optional[datetime] = None
-    dependencies: List[str] = None
+    dependencies: List[str] = field(default_factory=list)
     notes: Optional[str] = None
     estimated_hours: Optional[float] = None
     actual_hours: Optional[float] = None
     assignee: Optional[str] = None
-    tags: List[str] = None
+    tags: List[str] = field(default_factory=list)
+    status_timestamps: Dict[str, datetime] = field(default_factory=dict)
     
     def __post_init__(self):
         if self.dependencies is None:
@@ -63,6 +65,8 @@ class Task:
             self.created_at = datetime.now(timezone.utc)
         if self.updated_at is None:
             self.updated_at = datetime.now(timezone.utc)
+        if self.status_timestamps is None:
+            self.status_timestamps = {self.status.value: self.updated_at}
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task to dictionary for YAML serialization"""
@@ -74,6 +78,11 @@ class Task:
         for field in ['created_at', 'updated_at', 'due_date']:
             if data[field]:
                 data[field] = data[field].isoformat()
+        
+        # Convert status_timestamps to ISO strings
+        if data['status_timestamps']:
+            for status, dt in data['status_timestamps'].items():
+                data['status_timestamps'][status] = dt.isoformat()
         return data
     
     @classmethod
@@ -93,6 +102,16 @@ class Task:
                     data[field] = dt_obj.replace(tzinfo=timezone.utc)
                 else:
                     data[field] = dt_obj
+        
+        # Convert status_timestamps back to datetimes
+        if isinstance(data.get('status_timestamps'), dict):
+            for status, dt_str in data['status_timestamps'].items():
+                if isinstance(dt_str, str):
+                    dt_obj = datetime.fromisoformat(dt_str)
+                    if dt_obj.tzinfo is None:
+                        data['status_timestamps'][status] = dt_obj.replace(tzinfo=timezone.utc)
+                    else:
+                        data['status_timestamps'][status] = dt_obj
         
         task = cls(**data)
         now = datetime.now(timezone.utc)
@@ -124,6 +143,7 @@ class TaskManager:
         self.status_dirs = {
             TaskStatus.PENDING: self.tasks_root / "📦 backlog",
             TaskStatus.BLOCKED: self.tasks_root / "🚫 blocked", 
+            TaskStatus.BLOCKED_BY: self.tasks_root / "🔗 blocked_by", 
             TaskStatus.TODO: self.tasks_root / "📋 todo",
             TaskStatus.IN_PROGRESS: self.tasks_root / "🔄 in-progress",
             TaskStatus.COMPLETE: self.tasks_root / "✅ done",
@@ -335,7 +355,7 @@ class TaskManager:
             
         return None
     
-    def update_task_status(self, task_id: str, new_status: TaskStatus, notes: str = None) -> bool:
+    def update_task_status(self, task_id: str, new_status: TaskStatus, notes: str = "") -> bool:
         """Update task status with comprehensive audit and performance logging"""
         start_time = time.time()
         
@@ -358,6 +378,7 @@ class TaskManager:
             # Update task
             old_status = task.status
             task.status = new_status
+            task.status_timestamps[new_status.value] = datetime.now(timezone.utc)
             if notes:
                 task.notes = f"{task.notes}\n\n[{datetime.now().isoformat()}] Status changed from {old_status.value} to {new_status.value}: {notes}" if task.notes else f"[{datetime.now().isoformat()}] {notes}"
             
@@ -458,16 +479,52 @@ class TaskManager:
         except Exception as e:
             logger.error(f"Error adding note to task {task_id}: {e}", exc_info=True)
             return False
+
+    def update_task_fields(self, task_id: str, **kwargs) -> bool:
+        """Update specific fields of a task."""
+        start_time = time.time()
+        try:
+            task = self.tasks_cache.get(task_id)
+            if not task:
+                logger.error(f"Task {task_id} not found")
+                return False
+
+            for field, value in kwargs.items():
+                if hasattr(task, field):
+                    if field == 'tags' or field == 'dependencies':
+                        setattr(task, field, value)
+                    elif field == 'priority':
+                        setattr(task, field, TaskPriority(value))
+                    elif field == 'due_date':
+                        setattr(task, field, datetime.fromisoformat(value) if value else None)
+                    else:
+                        setattr(task, field, value)
+
+            success = self.save_task(task)
+            if success:
+                duration = time.time() - start_time
+                logger.info(f"Updated fields for task {task_id}")
+                if performance_logger:
+                    performance_logger.log_operation_timing(
+                        "update_task_fields",
+                        duration,
+                        {"task_id": task_id, "updated_fields": list(kwargs.keys())}
+                    )
+            return success
+        except Exception as e:
+            logger.error(f"Error updating task fields for {task_id}: {e}", exc_info=True)
+            return False
     
     def _is_valid_status_transition(self, current: TaskStatus, new: TaskStatus) -> bool:
         """Validate if status transition is allowed"""
         valid_transitions = {
-            TaskStatus.PENDING: [TaskStatus.TODO, TaskStatus.BLOCKED, TaskStatus.CANCELLED],
-            TaskStatus.BLOCKED: [TaskStatus.TODO, TaskStatus.PENDING, TaskStatus.CANCELLED],
-            TaskStatus.TODO: [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.CANCELLED, TaskStatus.COMPLETE],
-            TaskStatus.IN_PROGRESS: [TaskStatus.COMPLETE, TaskStatus.TODO, TaskStatus.BLOCKED],
-            TaskStatus.COMPLETE: [TaskStatus.IN_PROGRESS],  # Allow reopening
-            TaskStatus.CANCELLED: [TaskStatus.PENDING, TaskStatus.TODO]  # Allow reactivation
+            TaskStatus.PENDING: [TaskStatus.TODO, TaskStatus.BLOCKED, TaskStatus.CANCELLED, TaskStatus.BLOCKED_BY],
+            TaskStatus.BLOCKED: [TaskStatus.TODO, TaskStatus.PENDING, TaskStatus.CANCELLED, TaskStatus.BLOCKED_BY],
+            TaskStatus.TODO: [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.CANCELLED, TaskStatus.COMPLETE, TaskStatus.BLOCKED_BY],
+            TaskStatus.IN_PROGRESS: [TaskStatus.COMPLETE, TaskStatus.TODO, TaskStatus.BLOCKED, TaskStatus.BLOCKED_BY],
+            TaskStatus.COMPLETE: [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED_BY],  # Allow reopening
+            TaskStatus.CANCELLED: [TaskStatus.PENDING, TaskStatus.TODO, TaskStatus.BLOCKED_BY],
+            TaskStatus.BLOCKED_BY: [TaskStatus.PENDING, TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETE, TaskStatus.CANCELLED] # Allow transition out of BLOCKED_BY
         }
         
         return new in valid_transitions.get(current, [])
@@ -529,7 +586,28 @@ class TaskManager:
                     overdue_tasks.append(task)
         
         return overdue_tasks
-    
+
+    def get_blocking_tasks(self) -> List[Task]:
+        """Get all tasks that are blocking other tasks."""
+        blocking_task_ids = set()
+        for task in self.tasks_cache.values():
+            for dep_id in task.dependencies:
+                blocking_task_ids.add(dep_id)
+        
+        return [self.tasks_cache[task_id] for task_id in blocking_task_ids if task_id in self.tasks_cache]
+
+    def update_blocking_task_statuses(self) -> List[str]:
+        """Update the status of tasks that are blocking others to BLOCKED_BY."""
+        updated_tasks = []
+        blocking_task_ids = {dep_id for task in self.tasks_cache.values() for dep_id in task.dependencies}
+
+        for task_id in blocking_task_ids:
+            task = self.tasks_cache.get(task_id)
+            if task and task.status != TaskStatus.BLOCKED_BY:
+                self.update_task_status(task.id, TaskStatus.BLOCKED_BY, "Automatically set to BLOCKED_BY as it is blocking other tasks.")
+                updated_tasks.append(task.id)
+        return updated_tasks
+
     def get_dependency_chain(self, task_id: str) -> List[str]:
         """Get the full dependency chain for a task"""
         visited = set()
@@ -566,7 +644,7 @@ class TaskManager:
         
         return errors
     
-    def _has_circular_dependency(self, task_id: str, visited: set = None) -> bool:
+    def _has_circular_dependency(self, task_id: str, visited: Optional[set[str]] = None) -> bool:
         """Check if a task has circular dependencies"""
         if visited is None:
             visited = set()
@@ -591,11 +669,47 @@ class TaskManager:
         blocked_tasks = self.get_tasks_by_status(TaskStatus.BLOCKED)
         for task in blocked_tasks:
             if self._dependencies_satisfied(task.id):
-                if self.update_task_status(task.id, TaskStatus.TODO, "Auto-transitioned: dependencies satisfied"):
+                if task.dependencies:
+                    if self.update_task_status(task.id, TaskStatus.PENDING, "Auto-transitioned: dependencies satisfied, moved to PENDING"):
+                        transitioned.append(task.id)
+                else:
+                    if self.update_task_status(task.id, TaskStatus.TODO, "Auto-transitioned: dependencies satisfied"):
+                        transitioned.append(task.id)
                     transitioned.append(task.id)
         
         return transitioned
     
+    def promote_dependency_priority(self) -> List[str]:
+        """Automatically promote priority of tasks that are blocking others."""
+        promoted_tasks = []
+        
+        # Find tasks that are blocking others
+        blocking_task_ids = {dep_id for task in self.tasks_cache.values() for dep_id in task.dependencies}
+
+        for task_id in blocking_task_ids:
+            task = self.tasks_cache.get(task_id)
+            if task and task.status == TaskStatus.PENDING and task.priority in [TaskPriority.LOW, TaskPriority.MEDIUM]:
+                # Check if all dependencies of this blocking task are satisfied
+                if self._dependencies_satisfied(task.id):
+                    # Promote priority to HIGH and move to TODO
+                    task.priority = TaskPriority.HIGH
+                    self.update_task_status(task.id, TaskStatus.TODO, "Automatically promoted due to blocking other tasks.")
+                    promoted_tasks.append(task.id)
+        return promoted_tasks
+
+    def assign_due_dates_to_critical_tasks(self) -> List[str]:
+        """Assigns due dates to critical priority tasks that are missing them."""
+        updated_tasks = []
+        now = datetime.now(timezone.utc)
+        
+        for task in self.tasks_cache.values():
+            if task.priority == TaskPriority.CRITICAL and not task.due_date:
+                # Assign a due date 3 days from now
+                task.due_date = now + timedelta(days=3)
+                self.save_task(task)
+                updated_tasks.append(task.id)
+        return updated_tasks
+
     def get_task_statistics(self) -> Dict[str, Any]:
         """Get comprehensive task statistics"""
         stats = {
