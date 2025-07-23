@@ -1,0 +1,4 @@
+pyyaml
+click
+pytest
+python-json-logger
