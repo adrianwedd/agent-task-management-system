@@ -1,4 +1,5 @@
 import pytest
+import os
 from src.task_management.task_manager import TaskManager, TaskStatus, TaskPriority
 
 @pytest.fixture
@@ -41,3 +42,16 @@ def test_update_task_status(task_manager):
     assert success
     updated_task = task_manager.get_task("test-task-2")
     assert updated_task.status == TaskStatus.IN_PROGRESS
+
+def test_add_note_to_task(task_manager):
+    task = task_manager.create_task(
+        id="test-task-3",
+        title="Test Task 3",
+        description="A third test task.",
+        agent="TEST_AGENT",
+        priority=TaskPriority.LOW
+    )
+    success = task_manager.add_note_to_task("test-task-3", "This is a test note.")
+    assert success
+    updated_task = task_manager.get_task("test-task-3")
+    assert "This is a test note." in updated_task.notes

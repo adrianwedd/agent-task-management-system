@@ -875,6 +875,10 @@ def main():
             logger.error(f"❌ Command {args.command} failed: {str(e)}")
         print(f"❌ Command failed: {str(e)}")
         sys.exit(1)
+    finally:
+        print("\n--- Reminder ---")
+        print("Remember to update your tasks (status, notes, etc.) before committing changes.")
+        print("This ensures your progress is accurately reflected.")
 
 
 if __name__ == '__main__':
