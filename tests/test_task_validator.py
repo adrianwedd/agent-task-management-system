@@ -86,7 +86,7 @@ def test_validate_task_future_timestamps(validator):
     )
     warnings, errors = validator.validate_task(task)
     assert any("created_at cannot be in the future" in warning for warning in warnings)
-    assert any("updated_at cannot be in the future" in warning for warning in warnings)
+    assert any("updated_at cannot be in the future" in warning.message for warning in warnings)
     assert not errors
 
 def test_validate_task_invalid_status_transition(validator):
@@ -108,7 +108,7 @@ def test_validate_task_invalid_status_transition(validator):
         tags=["test"]
     )
     warnings, errors = validator.validate_task(task)
-    assert any("unresolved dependencies" in error for error in errors)
+    assert any("unresolved dependencies" in error.message for error in errors)
     assert not warnings
 
 def test_validate_task_agent_assignment(validator):
@@ -130,5 +130,5 @@ def test_validate_task_agent_assignment(validator):
         tags=["test"]
     )
     warnings, errors = validator.validate_task(task)
-    assert any("agent 'DOCUMENTER' might not be suitable" in warning for warning in warnings)
+    assert any("Unknown agent 'DOCUMENTER'. Suggested migration: 'DEVELOPER' (auto-fixable)" in warning.message for warning in warnings)
     assert not errors

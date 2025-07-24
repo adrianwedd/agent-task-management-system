@@ -306,14 +306,17 @@ class TaskCLI:
             else:
                 logger.warning(f"⚠️ Task {task_id} has {len(errors)} validation issues")
             print(f"⚠️ Task {task_id} validation issues:")
+            for warning in warnings:
+                icon = {'error': '❌', 'warning': '⚠️', 'info': 'ℹ️'}[warning.severity]
+                print(f"  {icon} {warning.field}: {warning.message}")
             for error in errors:
                 icon = {'error': '❌', 'warning': '⚠️', 'info': 'ℹ️'}[error.severity]
                 print(f"  {icon} {error.field}: {error.message}")
     
     def _validate_all_tasks(self) -> None:
         """Validate all tasks in the system"""
-        errors = self.validator.validate_task_system(self.task_manager.tasks_cache)
-        report = self.validator.generate_validation_report(errors)
+        warnings, errors = self.validator.validate_task_system(self.task_manager.tasks_cache)
+        report = self.validator.generate_validation_report(warnings, errors)
         print(report)
     
     def auto_fix_tasks(self, args) -> None:
@@ -536,8 +539,11 @@ class TaskCLI:
             
             auto_merge_icon = "🔄" if dup.auto_mergeable else "👥"
             
+            clickable_id1 = self._make_clickable_task_id(dup.task1)
+            clickable_id2 = self._make_clickable_task_id(dup.task2)
+            
             console.print(f"{i}. {auto_merge_icon} [{confidence_color}]{dup.confidence.upper()}[/{confidence_color}] "
-                         f"({dup.similarity_score:.2f}) {dup.task1.id} ↔ {dup.task2.id}")
+                         f"({dup.similarity_score:.2f}) {clickable_id1} ↔ {clickable_id2}")
             console.print(f"   '{dup.task1.title}' ↔ '{dup.task2.title}'")
             console.print(f"   Criteria: {', '.join(dup.match_criteria)}")
             console.print()
@@ -839,8 +845,11 @@ class TaskCLI:
             # Generate compact action links for table format
             action_links = self._generate_compact_action_links(task)
 
+            # Generate clickable task ID link
+            clickable_id = self._make_clickable_task_id(task)
+            
             table.add_row(
-                task.id,
+                clickable_id,
                 task.title,
                 task.agent,
                 f"{status_icon} {task.status.value}",
@@ -871,10 +880,13 @@ class TaskCLI:
                 TaskPriority.LOW: "⚪"
             }.get(task.priority, "❓")
             
+            # Generate clickable task ID link
+            clickable_id = self._make_clickable_task_id(task)
+            
             # Generate clickable action links based on current status
             action_links = self._generate_action_links(task)
             
-            console.print(f"{status_icon} {priority_icon} {task.id}: {task.title} ([bold]{task.agent}[/bold]) {action_links}")
+            console.print(f"{status_icon} {priority_icon} {clickable_id}: {task.title} ([bold]{task.agent}[/bold]) {action_links}")
     
     def _generate_action_links(self, task) -> str:
         """Generate action links for a task based on its status"""
@@ -924,10 +936,46 @@ class TaskCLI:
         
         return " ".join(links) if links else ""
     
+    def _make_clickable_task_id(self, task) -> str:
+        """Generate a clickable task ID link to open the file in an IDE"""
+        # Find the task file path
+        task_file_path = self._get_task_file_path(task)
+        
+        if task_file_path:
+            # Create file:// URL for the task file
+            import urllib.parse
+            file_url = f"file://{urllib.parse.quote(str(task_file_path))}"
+            
+            # Use OSC 8 hyperlink format for terminal compatibility
+            return f"\033]8;;{file_url}\033\\{task.id}\033]8;;\033\\"
+        else:
+            # Fallback to plain text if file not found
+            return task.id
+    
+    def _get_task_file_path(self, task) -> str:
+        """Get the full file path for a task"""
+        import os
+        
+        # Get the task file from the appropriate status directory
+        status_dir = self.task_manager.status_dirs.get(task.status)
+        if status_dir:
+            task_file = status_dir / f"{task.id}.md"
+            if task_file.exists():
+                return os.path.abspath(task_file)
+        
+        # If not found in expected location, search all directories
+        for status_dir in self.task_manager.status_dirs.values():
+            task_file = status_dir / f"{task.id}.md"
+            if task_file.exists():
+                return os.path.abspath(task_file)
+        
+        return None
+    
     def _show_action_help(self) -> None:
         """Show help for action buttons in task list"""
         console = Console()
-        console.print("\n[bold]Action Links Guide:[/bold]")
+        console.print("\n[bold]Interactive Features:[/bold]")
+        console.print("🔗  Task IDs are clickable links that open files in your IDE")
         console.print("▶️  Start task (todo → in_progress)")
         console.print("✅  Complete task (→ complete)")
         console.print("🚫  Block task (→ blocked)")

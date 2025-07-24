@@ -10,10 +10,10 @@ description: 'Modify the CLI to render task IDs as clickable links, allowing use
 
   '
 agent: CODEFORGE
-status: pending
+status: todo
 priority: medium
 created_at: '2025-07-23T04:14:55.849991+00:00'
-updated_at: '2025-07-24T11:32:48.432963'
+updated_at: '2025-07-24T11:38:47.071672'
 due_date: null
 dependencies: []
 notes: 'The links should ideally be configurable to support different IDEs (e.g.,
@@ -48,7 +48,7 @@ tags:
 - ux
 - ide-integration
 status_timestamps:
-  todo: '2025-07-24T07:35:05.913410+00:00'
+  todo: '2025-07-24T01:38:47.071670+00:00'
   blocked: '2025-07-23T22:31:48.610337+00:00'
   pending: '2025-07-23T22:31:48.611980+00:00'
 ---

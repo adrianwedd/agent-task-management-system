@@ -391,24 +391,35 @@ class TaskValidator:
         
         return fixes
     
-    def validate_task_system(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def validate_task_system(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate the entire task system for consistency"""
-        errors = []
+        all_warnings = []
+        all_errors = []
         
         # Validate individual tasks first
         for task in tasks.values():
-            task_errors = self.validate_task(task)
-            errors.extend(task_errors)
+            warnings, errors = self.validate_task(task)
+            all_warnings.extend(warnings)
+            all_errors.extend(errors)
         
         # Validate system-wide constraints
-        errors.extend(self._validate_system_dependencies(tasks))
-        errors.extend(self._validate_system_consistency(tasks))
-        errors.extend(self._validate_agent_workload(tasks))
+        system_warnings, system_errors = self._validate_system_dependencies(tasks)
+        all_warnings.extend(system_warnings)
+        all_errors.extend(system_errors)
+
+        system_warnings, system_errors = self._validate_system_consistency(tasks)
+        all_warnings.extend(system_warnings)
+        all_errors.extend(system_errors)
+
+        system_warnings, system_errors = self._validate_agent_workload(tasks)
+        all_warnings.extend(system_warnings)
+        all_errors.extend(system_errors)
         
-        return errors
+        return all_warnings, all_errors
     
-    def _validate_system_dependencies(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def _validate_system_dependencies(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate dependencies across the entire system"""
+        warnings = []
         errors = []
         
         # Check for missing dependency targets
@@ -419,7 +430,7 @@ class TaskValidator:
                     errors.append(ValidationError(
                         field='dependencies',
                         message=f"Dependency '{dep_id}' does not exist",
-                        severity='error',
+                        severity=ValidationSeverity.ERROR.value,
                         task_id=task.id
                     ))
         
@@ -430,14 +441,15 @@ class TaskValidator:
             errors.append(ValidationError(
                 field='dependencies',
                 message=f"Circular dependency detected: {cycle_str}",
-                severity='error',
+                severity=ValidationSeverity.ERROR.value,
                 task_id=cycle[0]
             ))
         
-        return errors
+        return warnings, errors
     
-    def _validate_system_consistency(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def _validate_system_consistency(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate system-wide consistency"""
+        warnings = []
         errors = []
         
         # Check for orphaned tasks (no incoming dependencies)
@@ -453,10 +465,10 @@ class TaskValidator:
                 orphaned_tasks.append(task_id)
         
         if len(orphaned_tasks) > len(tasks) * 0.5:  # More than 50% orphaned
-            errors.append(ValidationError(
+            warnings.append(ValidationError(
                 field='system',
                 message=f"High number of orphaned tasks ({len(orphaned_tasks)}). Consider reviewing task organization.",
-                severity='info'
+                severity=ValidationSeverity.INFO.value
             ))
         
         # Check for status inconsistencies
@@ -466,16 +478,17 @@ class TaskValidator:
                 blocked_without_deps.append(task.id)
         
         if blocked_without_deps:
-            errors.append(ValidationError(
+            warnings.append(ValidationError(
                 field='status',
                 message=f"Tasks blocked without dependencies: {', '.join(blocked_without_deps)}",
-                severity='warning'
+                severity=ValidationSeverity.WARNING.value
             ))
         
-        return errors
+        return warnings, errors
     
-    def _validate_agent_workload(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def _validate_agent_workload(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate agent workload distribution"""
+        warnings = []
         errors = []
         
         # Count active tasks per agent
@@ -487,10 +500,10 @@ class TaskValidator:
         # Check for overloaded agents (more than 10 active tasks)
         for agent, count in agent_workload.items():
             if count > 10:
-                errors.append(ValidationError(
+                warnings.append(ValidationError(
                     field='agent',
                     message=f"Agent '{agent}' has {count} active tasks - consider redistributing workload",
-                    severity='warning'
+                    severity=ValidationSeverity.WARNING.value
                 ))
         
         # Check for idle agents (no active tasks)
@@ -499,13 +512,13 @@ class TaskValidator:
         idle_agents = all_agents_with_tasks - active_agents
         
         if idle_agents:
-            errors.append(ValidationError(
+            warnings.append(ValidationError(
                 field='agent',
                 message=f"Agents with no active tasks: {', '.join(idle_agents)}",
-                severity='info'
+                severity=ValidationSeverity.INFO.value
             ))
         
-        return errors
+        return warnings, errors
     
     def _find_circular_dependencies(self, tasks: Dict[str, Task]) -> List[List[str]]:
         """Find circular dependencies in the task system"""

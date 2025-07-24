@@ -1,0 +1,499 @@
+name: Claude Code Analysis
+
+on:
+  # Trigger on pull requests for code review
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+  
+  # Manual trigger with optional focus area
+  workflow_dispatch:
+    inputs:
+      analysis_focus:
+        description: 'Focus area for analysis'
+        required: false
+        default: 'general'
+        type: choice
+        options:
+          - 'general'
+          - 'security'
+          - 'performance'
+          - 'architecture'
+          - 'testing'
+          - 'documentation'
+      
+      target_files:
+        description: 'Specific files/paths to analyze (optional)'
+        required: false
+        default: ''
+        type: string
+
+  # Issue comment trigger (@claude analyze)
+  issue_comment:
+    types: [created]
+
+env:
+  CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  check-trigger:
+    name: 🔍 Check Analysis Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_analyze: ${{ steps.check.outputs.should_analyze }}
+      analysis_type: ${{ steps.check.outputs.analysis_type }}
+      focus_area: ${{ steps.check.outputs.focus_area }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check if analysis should run
+        id: check
+        run: |
+          SHOULD_ANALYZE="false"
+          ANALYSIS_TYPE="none"
+          FOCUS_AREA="general"
+          
+          # Check for manual workflow dispatch
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SHOULD_ANALYZE="true"
+            ANALYSIS_TYPE="manual"
+            FOCUS_AREA="${{ github.event.inputs.analysis_focus }}"
+            echo "Manual analysis triggered with focus: $FOCUS_AREA"
+          fi
+          
+          # Check for PR trigger (limited scope to avoid API overuse)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Only analyze PRs with specific conditions
+            if [[ "${{ github.event.action }}" == "opened" ]] || \
+               [[ "${{ contains(github.event.pull_request.labels.*.name, 'claude-analyze') }}" == "true" ]]; then
+              SHOULD_ANALYZE="true"
+              ANALYSIS_TYPE="pull_request"
+              echo "PR analysis triggered"
+            fi
+          fi
+          
+          # Check for issue comment trigger
+          if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
+            COMMENT_BODY="${{ github.event.comment.body }}"
+            if [[ "$COMMENT_BODY" =~ @claude[[:space:]]+analyze ]]; then
+              SHOULD_ANALYZE="true"
+              ANALYSIS_TYPE="comment"
+              echo "Comment analysis triggered"
+              
+              # Extract focus from comment if specified
+              if [[ "$COMMENT_BODY" =~ security ]]; then
+                FOCUS_AREA="security"
+              elif [[ "$COMMENT_BODY" =~ performance ]]; then
+                FOCUS_AREA="performance"
+              elif [[ "$COMMENT_BODY" =~ architecture ]]; then
+                FOCUS_AREA="architecture"
+              elif [[ "$COMMENT_BODY" =~ testing ]]; then
+                FOCUS_AREA="testing"
+              elif [[ "$COMMENT_BODY" =~ documentation ]]; then
+                FOCUS_AREA="documentation"
+              fi
+            fi
+          fi
+          
+          echo "should_analyze=$SHOULD_ANALYZE" >> $GITHUB_OUTPUT
+          echo "analysis_type=$ANALYSIS_TYPE" >> $GITHUB_OUTPUT
+          echo "focus_area=$FOCUS_AREA" >> $GITHUB_OUTPUT
+
+  analyze-code:
+    name: 🤖 Claude Code Analysis
+    runs-on: ubuntu-latest
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_analyze == 'true'
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install anthropic requests
+
+      - name: 📊 Prepare analysis context
+        id: context
+        run: |
+          # Create analysis context based on trigger type
+          ANALYSIS_TYPE="${{ needs.check-trigger.outputs.analysis_type }}"
+          FOCUS_AREA="${{ needs.check-trigger.outputs.focus_area }}"
+          
+          echo "analysis_type=$ANALYSIS_TYPE" >> $GITHUB_OUTPUT
+          echo "focus_area=$FOCUS_AREA" >> $GITHUB_OUTPUT
+          
+          # Prepare file list for analysis
+          if [[ "$ANALYSIS_TYPE" == "pull_request" ]]; then
+            # Get changed files in PR
+            git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > changed_files.txt
+            echo "Changed files in PR:"
+            cat changed_files.txt
+          elif [[ "${{ github.event.inputs.target_files }}" != "" ]]; then
+            # Use specified files
+            echo "${{ github.event.inputs.target_files }}" | tr ',' '\n' > changed_files.txt
+          else
+            # Analyze key files
+            find src/ -name "*.py" | head -10 > changed_files.txt
+          fi
+
+      - name: 🤖 Run Claude Analysis
+        id: claude_analysis
+        run: |
+          cat << 'EOF' > claude_analyzer.py
+          import os
+          import sys
+          import json
+          import anthropic
+          from pathlib import Path
+          
+          def analyze_codebase():
+              api_key = os.getenv('CLAUDE_API_KEY')
+              if not api_key:
+                  print("❌ CLAUDE_API_KEY not set - skipping Claude analysis")
+                  return None
+              
+              client = anthropic.Anthropic(api_key=api_key)
+              focus_area = "${{ needs.check-trigger.outputs.focus_area }}"
+              analysis_type = "${{ needs.check-trigger.outputs.analysis_type }}"
+              
+              # Read changed files
+              try:
+                  with open('changed_files.txt', 'r') as f:
+                      files_to_analyze = [line.strip() for line in f if line.strip()]
+              except FileNotFoundError:
+                  files_to_analyze = []
+              
+              if not files_to_analyze:
+                  print("No files to analyze")
+                  return None
+              
+              # Prepare code content
+              code_content = ""
+              for file_path in files_to_analyze[:5]:  # Limit to 5 files to avoid token limits
+                  if os.path.exists(file_path) and file_path.endswith('.py'):
+                      try:
+                          with open(file_path, 'r', encoding='utf-8') as f:
+                              content = f.read()
+                              code_content += f"\n\n--- {file_path} ---\n{content}"
+                      except Exception as e:
+                          print(f"Error reading {file_path}: {e}")
+              
+              if not code_content:
+                  print("No Python code found to analyze")
+                  return None
+              
+              # Prepare analysis prompt based on focus area
+              focus_prompts = {
+                  'security': 'Focus on security vulnerabilities, authentication issues, and data protection concerns.',
+                  'performance': 'Focus on performance optimizations, efficiency improvements, and bottlenecks.',
+                  'architecture': 'Focus on code architecture, design patterns, and structural improvements.',
+                  'testing': 'Focus on test coverage, test quality, and testing best practices.',
+                  'documentation': 'Focus on code documentation, comments, and API documentation.',
+                  'general': 'Provide a general code review focusing on code quality, best practices, and maintainability.'
+              }
+              
+              prompt = f"""
+              You are performing a code analysis for the Agent Task Management System.
+              
+              Analysis Type: {analysis_type}
+              Focus Area: {focus_area}
+              
+              {focus_prompts.get(focus_area, focus_prompts['general'])}
+              
+              Please analyze the following code and provide:
+              1. **Summary**: Brief overview of the code quality
+              2. **Key Findings**: 3-5 most important observations
+              3. **Recommendations**: Specific actionable improvements
+              4. **Task Suggestions**: Suggest specific tasks that could be created in the task management system
+              
+              Code to analyze:
+              {code_content[:8000]}  # Limit content to avoid token limits
+              
+              Please be concise but thorough in your analysis.
+              """
+              
+              try:
+                  response = client.messages.create(
+                      model="claude-3-sonnet-20240229",
+                      max_tokens=2000,
+                      temperature=0.1,
+                      messages=[{"role": "user", "content": prompt}]
+                  )
+                  
+                  analysis_result = response.content[0].text
+                  
+                  # Save full analysis
+                  with open('claude_analysis.md', 'w') as f:
+                      f.write(f"# Claude Code Analysis Report\n\n")
+                      f.write(f"**Analysis Type**: {analysis_type}\n")
+                      f.write(f"**Focus Area**: {focus_area}\n")
+                      f.write(f"**Files Analyzed**: {', '.join(files_to_analyze[:5])}\n\n")
+                      f.write(analysis_result)
+                  
+                  # Extract task suggestions for task management system
+                  task_suggestions = []
+                  lines = analysis_result.split('\n')
+                  in_task_section = False
+                  
+                  for line in lines:
+                      if 'task' in line.lower() and ('suggest' in line.lower() or 'recommend' in line.lower()):
+                          in_task_section = True
+                      elif in_task_section and line.strip().startswith(('-', '*', '•')):
+                          task_suggestions.append(line.strip()[1:].strip())
+                  
+                  return {
+                      'analysis': analysis_result,
+                      'task_suggestions': task_suggestions,
+                      'files_analyzed': files_to_analyze
+                  }
+                  
+              except Exception as e:
+                  print(f"Error calling Claude API: {e}")
+                  return None
+          
+          if __name__ == "__main__":
+              result = analyze_codebase()
+              if result:
+                  print("✅ Claude analysis completed successfully")
+                  # Save results for GitHub Actions
+                  with open('analysis_results.json', 'w') as f:
+                      json.dump(result, f, indent=2)
+              else:
+                  print("⚠️ Claude analysis skipped or failed")
+                  sys.exit(0)  # Don't fail the workflow
+          EOF
+          
+          python claude_analyzer.py
+
+      - name: 📊 Upload Analysis Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: claude-analysis-results
+          path: |
+            claude_analysis.md
+            analysis_results.json
+
+      - name: 💬 Post Analysis to PR
+        if: needs.check-trigger.outputs.analysis_type == 'pull_request' && hashFiles('claude_analysis.md') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const analysis = fs.readFileSync('claude_analysis.md', 'utf8');
+              
+              const body = `## 🤖 Claude Code Analysis
+              
+              ${analysis}
+              
+              ---
+              *This analysis was generated automatically by Claude. For manual analysis, comment \`@claude analyze\` with optional focus areas: security, performance, architecture, testing, documentation.*`;
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            } catch (error) {
+              console.log('Analysis file not found or error posting comment:', error);
+            }
+
+      - name: 💬 Post Analysis to Issue Comment
+        if: needs.check-trigger.outputs.analysis_type == 'comment' && hashFiles('claude_analysis.md') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const analysis = fs.readFileSync('claude_analysis.md', 'utf8');
+              
+              const body = `## 🤖 Claude Code Analysis Results
+              
+              ${analysis}
+              
+              ---
+              *Analysis completed for focus area: ${{ needs.check-trigger.outputs.focus_area }}*`;
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            } catch (error) {
+              console.log('Analysis file not found or error posting comment:', error);
+            }
+
+  create-tasks:
+    name: 📝 Create Suggested Tasks
+    runs-on: ubuntu-latest
+    needs: [check-trigger, analyze-code]
+    if: needs.check-trigger.outputs.should_analyze == 'true' && hashFiles('analysis_results.json') != ''
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download analysis results
+        uses: actions/download-artifact@v4
+        with:
+          name: claude-analysis-results
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📝 Process Task Suggestions
+        run: |
+          cat << 'EOF' > process_suggestions.py
+          import json
+          import subprocess
+          import sys
+          import re
+          
+          def create_task_from_suggestion(suggestion, analysis_type, focus_area):
+              # Clean and format the suggestion
+              suggestion = suggestion.strip()
+              if not suggestion:
+                  return False
+              
+              # Generate task ID from suggestion
+              task_id = re.sub(r'[^a-z0-9]+', '-', suggestion.lower())[:50]
+              task_id = f"claude-suggested-{task_id}"
+              
+              # Determine priority based on keywords
+              priority = "medium"
+              if any(word in suggestion.lower() for word in ['security', 'critical', 'urgent', 'fix']):
+                  priority = "high"
+              elif any(word in suggestion.lower() for word in ['optimization', 'enhancement', 'improve']):
+                  priority = "medium"
+              else:
+                  priority = "low"
+              
+              # Create task using CLI
+              cmd = [
+                  'python', '-m', 'src.task_management.cli', 'create',
+                  '--id', task_id,
+                  '--title', f"Claude Suggestion: {suggestion[:80]}",
+                  '--description', f"Task suggested by Claude code analysis.\n\nOriginal suggestion: {suggestion}\n\nAnalysis type: {analysis_type}\nFocus area: {focus_area}",
+                  '--agent', 'CODEFORGE',
+                  '--priority', priority,
+                  '--tags', 'claude-suggested,code-analysis,automated'
+              ]
+              
+              try:
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  if result.returncode == 0:
+                      print(f"✅ Created task: {task_id}")
+                      return True
+                  else:
+                      print(f"❌ Failed to create task: {result.stderr}")
+                      return False
+              except Exception as e:
+                  print(f"❌ Error creating task: {e}")
+                  return False
+          
+          def main():
+              try:
+                  with open('analysis_results.json', 'r') as f:
+                      results = json.load(f)
+                  
+                  suggestions = results.get('task_suggestions', [])
+                  analysis_type = "${{ needs.check-trigger.outputs.analysis_type }}"
+                  focus_area = "${{ needs.check-trigger.outputs.focus_area }}"
+                  
+                  if not suggestions:
+                      print("No task suggestions found in analysis")
+                      return
+                  
+                  print(f"Processing {len(suggestions)} task suggestions...")
+                  created_count = 0
+                  
+                  for suggestion in suggestions[:3]:  # Limit to 3 tasks to avoid spam
+                      if create_task_from_suggestion(suggestion, analysis_type, focus_area):
+                          created_count += 1
+                  
+                  print(f"✅ Created {created_count} tasks from Claude suggestions")
+                  
+                  # Save summary for GitHub Actions
+                  with open('task_creation_summary.txt', 'w') as f:
+                      f.write(f"Created {created_count} tasks from {len(suggestions)} suggestions\n")
+                      for i, suggestion in enumerate(suggestions[:3], 1):
+                          f.write(f"{i}. {suggestion[:100]}...\n")
+                  
+              except Exception as e:
+                  print(f"Error processing suggestions: {e}")
+                  sys.exit(0)  # Don't fail the workflow
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          python process_suggestions.py
+
+      - name: 📊 Upload Task Creation Summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task-creation-summary
+          path: task_creation_summary.txt
+
+  summary:
+    name: 📋 Analysis Summary
+    runs-on: ubuntu-latest
+    needs: [check-trigger, analyze-code, create-tasks]
+    if: always() && needs.check-trigger.outputs.should_analyze == 'true'
+    steps:
+      - name: 📋 Generate Summary
+        run: |
+          echo "# 🤖 Claude Analysis Summary" >> summary.md
+          echo "" >> summary.md
+          echo "**Trigger Type**: ${{ needs.check-trigger.outputs.analysis_type }}" >> summary.md
+          echo "**Focus Area**: ${{ needs.check-trigger.outputs.focus_area }}" >> summary.md
+          echo "**Analysis Status**: ${{ needs.analyze-code.result }}" >> summary.md
+          echo "**Task Creation Status**: ${{ needs.create-tasks.result }}" >> summary.md
+          echo "" >> summary.md
+          
+          if [[ "${{ needs.analyze-code.result }}" == "success" ]]; then
+            echo "✅ Code analysis completed successfully" >> summary.md
+          else
+            echo "❌ Code analysis failed or was skipped" >> summary.md
+          fi
+          
+          if [[ "${{ needs.create-tasks.result }}" == "success" ]]; then
+            echo "✅ Task suggestions processed" >> summary.md
+          else
+            echo "⚠️ No tasks created from suggestions" >> summary.md
+          fi
+
+      - name: 📊 Upload Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-summary
+          path: summary.md

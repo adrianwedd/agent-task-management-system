@@ -1,0 +1,67 @@
+---
+id: integrate-claude-code-base-action
+title: Integrate Claude Codebase Action for Automated Code Analysis
+description: 'Integrate the Claude Codebase Action (https://github.com/anthropics/claude-code-base-action)
+
+  to allow Claude to perform automated code analysis and, crucially, to trigger and
+  manage
+
+  tasks within *this* task management system via its new API. This integration will
+  be
+
+  scoped to avoid running on every code change to prevent exceeding API limits.
+
+  It should also support human-triggered analysis via @mentions in PRs, GitHub issues,
+
+  or other designated interfaces.
+
+  '
+agent: CODEFORGE
+status: todo
+priority: high
+created_at: '2025-07-23T04:14:55.839112+00:00'
+updated_at: '2025-07-24T11:47:30.365018'
+due_date: null
+dependencies:
+- add-github-actions-cicd
+notes: 'This integration will provide valuable automated feedback on code quality
+  and potential issues,
+
+  leveraging Claude''s capabilities. It depends on the existing task to set up GitHub
+  Actions CI/CD.
+
+
+
+  [2025-07-24T07:38:37.241978] Status changed from complete to blocked_by: Automatically
+  set to BLOCKED_BY as it is blocking other tasks.'
+estimated_hours: 2.0
+actual_hours: null
+assignee: null
+tags:
+- integration
+- github-actions
+- code-analysis
+- claude
+status_timestamps:
+  blocked_by: '2025-07-24T07:38:37.241984+00:00'
+  todo: '2025-07-24T01:47:30.365016+00:00'
+---
+
+## Description
+
+Integrate the Claude Codebase Action (https://github.com/anthropics/claude-code-base-action)
+to allow Claude to perform automated code analysis and, crucially, to trigger and manage
+tasks within *this* task management system via its new API. This integration will be
+scoped to avoid running on every code change to prevent exceeding API limits.
+It should also support human-triggered analysis via @mentions in PRs, GitHub issues,
+or other designated interfaces.
+
+
+## Notes
+
+This integration will provide valuable automated feedback on code quality and potential issues,
+leveraging Claude's capabilities. It depends on the existing task to set up GitHub Actions CI/CD.
+
+
+[2025-07-24T07:38:37.241978] Status changed from complete to blocked_by: Automatically set to BLOCKED_BY as it is blocking other tasks.
+
