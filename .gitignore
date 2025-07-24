@@ -213,6 +213,7 @@ __marimo__/
 # Claude 
 # CLAUDE.md
 .claude/
+claude-local/
 
 # Gemini
 # GEMINI.md

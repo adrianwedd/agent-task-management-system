@@ -10,7 +10,7 @@ agent: CODEFORGE
 status: blocked
 priority: medium
 created_at: '2025-07-23T04:14:55.836795+00:00'
-updated_at: '2025-07-24T08:31:08.512045'
+updated_at: '2025-07-24T10:46:00.841945'
 due_date: null
 dependencies:
 - fix-import-dependencies
@@ -31,9 +31,7 @@ tags:
 - scalability
 - caching
 - portfolio-enhancement
-status_timestamps:
-  todo: '2025-07-24T07:34:43.923573+00:00'
-  blocked: '2025-07-23T22:31:08.512043+00:00'
+status_timestamps: {}
 ---
 
 ## Description

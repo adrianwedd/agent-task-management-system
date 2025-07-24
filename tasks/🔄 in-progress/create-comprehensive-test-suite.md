@@ -13,7 +13,17 @@ updated_at: '2025-07-24T10:03:17.838745'
 due_date: null
 dependencies:
 - fix-import-dependencies
-notes: '[2025-07-24T10:03:17.838741] Still debugging test failures. `TypeError: object of type \'Task\'' has no len()` in `test_list_tasks_cli` and `AssertionError` in `test_create_task_cli` related to `NoneType` iterables. The `Task.__post_init__` was modified to initialize `dependencies` and `tags` to empty lists if they are `None`. The CLI was refactored to use `click` and `Dict` import was added. The `pytest.ini` was added to resolve `ModuleNotFoundError` for `src` imports. The `os` module was imported in `test_task_manager.py`. The `_validate_agent_workload` method in `TaskValidator` was updated to directly access `self.task_manager.tasks_cache`.'
+notes: |
+  [2025-07-24T10:03:17.838741] Still debugging test failures. 
+  TypeError: object of type 'Task' has no len() in test_list_tasks_cli 
+  AssertionError in test_create_task_cli related to NoneType iterables. 
+  
+  Fixed so far:
+  - Task.__post_init__ modified to initialize dependencies and tags to empty lists if None
+  - CLI refactored to use click and Dict import added
+  - pytest.ini added to resolve ModuleNotFoundError for src imports  
+  - os module imported in test_task_manager.py
+  - _validate_agent_workload method updated to access self.task_manager.tasks_cache
 estimated_hours: 8.0
 actual_hours: null
 assignee: null
