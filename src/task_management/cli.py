@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+import click
 from rich.console import Console
 from rich.table import Table
 
@@ -881,5 +882,85 @@ def main():
         print("This ensures your progress is accurately reflected.")
 
 
+@click.group()
+def cli():
+    """Agent Task Management CLI"""
+    pass
+
+@cli.command()
+@click.option('--id', 'task_id', required=True, help='Task ID')
+@click.option('--title', required=True, help='Task title')
+@click.option('--description', help='Task description')
+@click.option('--agent', required=True, help='Assigned agent')
+@click.option('--priority', type=click.Choice(['low', 'medium', 'high', 'critical']), default='medium')
+@click.option('--estimated-hours', type=float, help='Estimated hours')
+@click.option('--due-date', help='Due date (ISO format)')
+@click.option('--tags', help='Comma-separated tags')
+@click.option('--dependencies', help='Comma-separated dependency IDs')
+@click.option('--template', help='Template ID to use')
+@click.option('--template-vars', multiple=True, help='Template variables (key=value)')
+@click.option('--validate', is_flag=True, help='Validate after creation')
+@click.option('--tasks-root', default='tasks', help='Tasks root directory')
+def create(task_id, title, description, agent, priority, estimated_hours, due_date, tags, dependencies, template, template_vars, validate, tasks_root):
+    """Create a new task"""
+    # Convert to argparse-like namespace for compatibility
+    class Args:
+        def __init__(self):
+            self.id = task_id
+            self.title = title
+            self.description = description
+            self.agent = agent
+            self.priority = priority
+            self.estimated_hours = estimated_hours
+            self.due_date = due_date
+            self.tags = tags
+            self.dependencies = dependencies
+            self.template = template
+            self.template_vars = list(template_vars) if template_vars else None
+            self.validate = validate
+    
+    cli_instance = TaskCLI(tasks_root=tasks_root)
+    cli_instance.create_task(Args())
+
+@cli.command(name='list')
+@click.option('--tasks-root', default='tasks', help='Tasks root directory')
+def list_tasks_cmd(tasks_root):
+    """List tasks"""
+    class Args:
+        def __init__(self):
+            self.agent = None
+            self.status = None
+            self.priority = None
+            self.tag = None
+            self.overdue = False
+            self.include_completed = False
+            self.sort_by = 'priority'
+            self.format = 'list'
+            self.blockers = False
+    
+    cli_instance = TaskCLI(tasks_root=tasks_root)
+    cli_instance.list_tasks(Args())
+
+@cli.command()
+@click.argument('task_id')
+@click.argument('status', type=click.Choice(['pending', 'blocked', 'todo', 'in_progress', 'complete', 'cancelled']))
+@click.option('--notes', help='Status change notes')
+@click.option('--tasks-root', default='tasks', help='Tasks root directory')
+def status(task_id, status, notes, tasks_root):
+    """Update task status"""
+    class Args:
+        def __init__(self):
+            self.task_id = task_id
+            self.status = status
+            self.notes = notes
+    
+    cli_instance = TaskCLI(tasks_root=tasks_root)
+    cli_instance.update_status(Args())
+
 if __name__ == '__main__':
-    main()
+    import sys
+    # Use the original argparse-based main for command line usage
+    if len(sys.argv) > 1:
+        main()
+    else:
+        cli()

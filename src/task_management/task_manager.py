@@ -57,16 +57,18 @@ class Task:
     status_timestamps: Dict[str, datetime] = field(default_factory=dict)
     
     def __post_init__(self):
+        # Handle None values for list fields
         if self.dependencies is None:
             self.dependencies = []
         if self.tags is None:
             self.tags = []
+        
         if self.created_at is None:
             self.created_at = datetime.now(timezone.utc)
         if self.updated_at is None:
             self.updated_at = datetime.now(timezone.utc)
-        if self.status_timestamps is None:
-            self.status_timestamps = {self.status.value: self.updated_at}
+        if self.status.value not in self.status_timestamps:
+            self.status_timestamps[self.status.value] = self.updated_at
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task to dictionary for YAML serialization"""
@@ -294,7 +296,7 @@ class TaskManager:
         content = f"---\n{yaml_content}---\n\n"
         
         # Add description as markdown if it contains newlines
-        if '\n' in task.description:
+        if task.description and '\n' in task.description:
             content += f"## Description\n\n{task.description}\n\n"
         
         # Add notes if present
