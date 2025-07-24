@@ -22,6 +22,7 @@ from .task_validator import TaskValidator
 from .task_analytics import TaskAnalytics
 from .task_templates import TaskTemplates
 from .changelog_generator import ChangelogGenerator
+from .task_deduplicator import TaskDeduplicator, MergeStrategy
 from utils.logger import logger, setup_logging
 
 # Initialize enhanced logging for CLI
@@ -37,6 +38,7 @@ class TaskCLI:
         self.analytics = TaskAnalytics(self.task_manager.tasks_cache)
         self.templates = TaskTemplates()
         self.changelog_generator = ChangelogGenerator(self.task_manager)
+        self.deduplicator = TaskDeduplicator(self.task_manager)
     
     def create_task(self, args) -> None:
         """Create a new task"""
@@ -220,6 +222,10 @@ class TaskCLI:
             self._display_tasks_json(tasks)
         else:
             self._display_tasks_list(tasks)
+        
+        # Show action help if there are tasks with actions
+        if tasks and args.format != 'json':
+            self._show_action_help()
     
     def show_task(self, args) -> None:
         """Show detailed information about a task"""
@@ -428,6 +434,165 @@ class TaskCLI:
         else:
             logger.info("No critical tasks found missing due dates.")
             print("No critical tasks found missing due dates.")
+    
+    def find_duplicates(self, args) -> None:
+        """Find potential duplicate tasks"""
+        duplicates = self.deduplicator.find_duplicates(include_completed=args.include_completed)
+        
+        if not duplicates:
+            logger.info("No duplicate tasks found.")
+            print("✅ No duplicate tasks found!")
+            return
+        
+        console = Console()
+        
+        # Show summary
+        stats = self.deduplicator.get_duplicate_stats()
+        print(f"🔍 Found {stats['total_duplicates']} potential duplicates")
+        print(f"   Auto-mergeable: {stats['auto_mergeable']}")
+        print(f"   High confidence: {stats['high_confidence']}")
+        print(f"   Medium confidence: {stats['medium_confidence']}")
+        print(f"   Low confidence: {stats['low_confidence']}")
+        
+        if args.format == 'table':
+            self._display_duplicates_table(duplicates)
+        elif args.format == 'detailed':
+            self._display_duplicates_detailed(duplicates)
+        else:
+            self._display_duplicates_list(duplicates)
+    
+    def auto_merge_duplicates(self, args) -> None:
+        """Automatically merge duplicate tasks"""
+        print("🔍 Scanning for auto-mergeable duplicates...")
+        
+        merged_tasks = self.deduplicator.auto_merge_duplicates()
+        
+        if merged_tasks:
+            print(f"✅ Successfully auto-merged {len(merged_tasks)} duplicate pairs:")
+            for merge in merged_tasks:
+                print(f"  • {merge}")
+            
+            # Reload tasks after merging
+            self.task_manager.load_all_tasks()
+            print(f"\n📊 Task count after merge: {len(self.task_manager.tasks_cache)}")
+        else:
+            print("ℹ️ No auto-mergeable duplicates found")
+    
+    def merge_tasks_manual(self, args) -> None:
+        """Manually merge two tasks"""
+        try:
+            preview = self.deduplicator.manual_merge_preview(args.task1, args.task2)
+            
+            console = Console()
+            print("🔍 Merge Preview:")
+            print(f"Task 1: {preview['task1']['title']} ({args.task1})")
+            print(f"Task 2: {preview['task2']['title']} ({args.task2})")
+            
+            if preview['conflicts']:
+                print("\n⚠️ Conflicts found:")
+                for conflict in preview['conflicts']:
+                    print(f"  {conflict['field']}: '{conflict['task1_value']}' vs '{conflict['task2_value']}'")
+            
+            if not args.auto_resolve:
+                # Interactive merge - simplified for now
+                response = input("\nProceed with suggested merge? [y/N]: ")
+                if response.lower() != 'y':
+                    print("❌ Merge cancelled")
+                    return
+            
+            # Create merge strategy
+            strategy = MergeStrategy(
+                keep_task_id=args.task1,  # Keep first task by default
+                remove_task_id=args.task2,
+                field_sources={},  # Use defaults from auto-merge logic
+                merge_notes=True,
+                merge_dependencies=True,
+                merge_tags=True
+            )
+            
+            success = self.deduplicator.execute_manual_merge(strategy)
+            
+            if success:
+                print(f"✅ Successfully merged {args.task2} into {args.task1}")
+                # Reload tasks
+                self.task_manager.load_all_tasks()
+            else:
+                print("❌ Failed to merge tasks")
+                
+        except Exception as e:
+            logger.error(f"Error in manual merge: {e}")
+            print(f"❌ Error: {e}")
+    
+    def _display_duplicates_list(self, duplicates) -> None:
+        """Display duplicates in simple list format"""
+        console = Console()
+        
+        for i, dup in enumerate(duplicates, 1):
+            confidence_color = {
+                'high': 'red',
+                'medium': 'yellow', 
+                'low': 'blue'
+            }.get(dup.confidence, 'white')
+            
+            auto_merge_icon = "🔄" if dup.auto_mergeable else "👥"
+            
+            console.print(f"{i}. {auto_merge_icon} [{confidence_color}]{dup.confidence.upper()}[/{confidence_color}] "
+                         f"({dup.similarity_score:.2f}) {dup.task1.id} ↔ {dup.task2.id}")
+            console.print(f"   '{dup.task1.title}' ↔ '{dup.task2.title}'")
+            console.print(f"   Criteria: {', '.join(dup.match_criteria)}")
+            console.print()
+    
+    def _display_duplicates_table(self, duplicates) -> None:
+        """Display duplicates in table format"""
+        console = Console()
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Score", justify="center", width=6)
+        table.add_column("Confidence", justify="center")
+        table.add_column("Auto-Merge", justify="center")
+        table.add_column("Task 1", min_width=15)
+        table.add_column("Task 2", min_width=15)
+        table.add_column("Criteria")
+        
+        for dup in duplicates:
+            confidence_color = {
+                'high': 'red',
+                'medium': 'yellow',
+                'low': 'blue'
+            }.get(dup.confidence, 'white')
+            
+            table.add_row(
+                f"{dup.similarity_score:.2f}",
+                f"[{confidence_color}]{dup.confidence}[/{confidence_color}]",
+                "🔄" if dup.auto_mergeable else "👥",
+                f"{dup.task1.id}\n{dup.task1.title[:30]}...",
+                f"{dup.task2.id}\n{dup.task2.title[:30]}...",
+                ", ".join(dup.match_criteria)
+            )
+        
+        console.print(table)
+    
+    def _display_duplicates_detailed(self, duplicates) -> None:
+        """Display duplicates with detailed information"""
+        console = Console()
+        
+        for i, dup in enumerate(duplicates, 1):
+            console.print(f"\n[bold]Duplicate Pair {i}[/bold]")
+            console.print(f"Similarity: {dup.similarity_score:.2f} | Confidence: {dup.confidence} | Auto-merge: {'Yes' if dup.auto_mergeable else 'No'}")
+            console.print(f"Criteria: {', '.join(dup.match_criteria)}")
+            
+            console.print(f"\n[bold blue]Task 1:[/bold blue] {dup.task1.id}")
+            console.print(f"Title: {dup.task1.title}")
+            console.print(f"Agent: {dup.task1.agent} | Status: {dup.task1.status.value} | Priority: {dup.task1.priority.value}")
+            if dup.task1.tags:
+                console.print(f"Tags: {', '.join(dup.task1.tags)}")
+            
+            console.print(f"\n[bold green]Task 2:[/bold green] {dup.task2.id}")
+            console.print(f"Title: {dup.task2.title}")
+            console.print(f"Agent: {dup.task2.agent} | Status: {dup.task2.status.value} | Priority: {dup.task2.priority.value}")
+            if dup.task2.tags:
+                console.print(f"Tags: {', '.join(dup.task2.tags)}")
+            
+            console.print("-" * 80)
     
     def show_analytics(self, args) -> None:
         """Show task analytics"""
@@ -640,7 +805,7 @@ class TaskCLI:
             print("No tasks ready for auto-transition")
     
     def _display_tasks_table(self, tasks) -> None:
-        """Display tasks in table format using rich."""
+        """Display tasks in table format using rich with clickable action links."""
         if not tasks:
             return
 
@@ -651,6 +816,7 @@ class TaskCLI:
         table.add_column("Agent", justify="right")
         table.add_column("Status", justify="right")
         table.add_column("Priority", justify="right")
+        table.add_column("Actions", justify="center", min_width=30)
 
         for task in tasks:
             status_icon = {
@@ -670,18 +836,22 @@ class TaskCLI:
                 TaskPriority.LOW: "white"
             }.get(task.priority, "white")
 
+            # Generate compact action links for table format
+            action_links = self._generate_compact_action_links(task)
+
             table.add_row(
                 task.id,
                 task.title,
                 task.agent,
                 f"{status_icon} {task.status.value}",
-                f"[{priority_color}]{task.priority.value}[/{priority_color}]"
+                f"[{priority_color}]{task.priority.value}[/{priority_color}]",
+                action_links
             )
         
         console.print(table)
     
     def _display_tasks_list(self, tasks) -> None:
-        """Display tasks in list format"""
+        """Display tasks in list format with clickable action links"""
         console = Console()
         for task in tasks:
             status_icon = {
@@ -701,7 +871,71 @@ class TaskCLI:
                 TaskPriority.LOW: "⚪"
             }.get(task.priority, "❓")
             
-            console.print(f"{status_icon} {priority_icon} {task.id}: {task.title} ([bold]{task.agent}[/bold])")
+            # Generate clickable action links based on current status
+            action_links = self._generate_action_links(task)
+            
+            console.print(f"{status_icon} {priority_icon} {task.id}: {task.title} ([bold]{task.agent}[/bold]) {action_links}")
+    
+    def _generate_action_links(self, task) -> str:
+        """Generate action links for a task based on its status"""
+        links = []
+        
+        # Status-specific actions with copy-paste friendly commands
+        if task.status == TaskStatus.TODO:
+            links.append("▶️ [blue]Start[/blue]")
+            links.append("✅ [green]Complete[/green]")
+        elif task.status == TaskStatus.IN_PROGRESS:
+            links.append("✅ [green]Complete[/green]")
+            links.append("🚫 [red]Block[/red]")
+        elif task.status == TaskStatus.BLOCKED:
+            links.append("📋 [yellow]Unblock[/yellow]")
+        elif task.status == TaskStatus.COMPLETE:
+            links.append("🔄 [cyan]Reopen[/cyan]")
+        elif task.status == TaskStatus.PENDING:
+            links.append("📋 [yellow]Ready[/yellow]")
+        
+        # Universal actions
+        links.append("👁️ [dim]View[/dim]")
+        links.append("💬 [dim]Note[/dim]")
+        
+        return " | ".join(links) if links else ""
+    
+    def _generate_compact_action_links(self, task) -> str:
+        """Generate compact action links for table format"""
+        links = []
+        
+        # Status-specific primary actions (more compact, emoji only)
+        if task.status == TaskStatus.TODO:
+            links.append("[blue]▶️[/blue]")
+            links.append("[green]✅[/green]")
+        elif task.status == TaskStatus.IN_PROGRESS:
+            links.append("[green]✅[/green]")
+            links.append("[red]🚫[/red]")
+        elif task.status == TaskStatus.BLOCKED:
+            links.append("[yellow]📋[/yellow]")
+        elif task.status == TaskStatus.COMPLETE:
+            links.append("[cyan]🔄[/cyan]")
+        elif task.status == TaskStatus.PENDING:
+            links.append("[yellow]📋[/yellow]")
+        
+        # Universal actions
+        links.append("[dim]👁️[/dim]")
+        links.append("[dim]💬[/dim]")
+        
+        return " ".join(links) if links else ""
+    
+    def _show_action_help(self) -> None:
+        """Show help for action buttons in task list"""
+        console = Console()
+        console.print("\n[bold]Action Links Guide:[/bold]")
+        console.print("▶️  Start task (todo → in_progress)")
+        console.print("✅  Complete task (→ complete)")
+        console.print("🚫  Block task (→ blocked)")
+        console.print("📋  Make ready/unblock (→ todo)")
+        console.print("🔄  Reopen task (complete → in_progress)")
+        console.print("👁️  View task details")
+        console.print("💬  Add quick note")
+        console.print("\n[dim]Copy commands from 'python -m src.task_management.cli [action] [task-id] [status]'[/dim]")
     
     def _display_tasks_json(self, tasks) -> None:
         """Display tasks in JSON format"""
@@ -808,6 +1042,18 @@ def main():
     # Assign due dates command
     assign_due_dates_parser = subparsers.add_parser('assign-due-dates', help='Assigns due dates to critical tasks missing them')
     
+    # Deduplication commands
+    find_dups_parser = subparsers.add_parser('find-duplicates', help='Find potential duplicate tasks')
+    find_dups_parser.add_argument('--include-completed', action='store_true', help='Include completed tasks in search')
+    find_dups_parser.add_argument('--format', choices=['list', 'table', 'detailed'], default='list', help='Output format')
+    
+    auto_merge_parser = subparsers.add_parser('auto-merge', help='Automatically merge duplicate tasks')
+    
+    merge_manual_parser = subparsers.add_parser('merge-tasks', help='Manually merge two tasks')
+    merge_manual_parser.add_argument('task1', help='First task ID (will be kept)')
+    merge_manual_parser.add_argument('task2', help='Second task ID (will be merged into first)')
+    merge_manual_parser.add_argument('--auto-resolve', action='store_true', help='Auto-resolve conflicts without prompting')
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -863,6 +1109,12 @@ def main():
             cli.promote_dependencies(args)
         elif args.command == 'assign-due-dates':
             cli.assign_due_dates(args)
+        elif args.command == 'find-duplicates':
+            cli.find_duplicates(args)
+        elif args.command == 'auto-merge':
+            cli.auto_merge_duplicates(args)
+        elif args.command == 'merge-tasks':
+            cli.merge_tasks_manual(args)
         
         if hasattr(logger, 'command_complete'):
             logger.command_complete(f"Command {args.command} completed successfully")
