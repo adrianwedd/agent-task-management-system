@@ -13,10 +13,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+import click
+from rich.console import Console
+from rich.table import Table
+
 from .task_manager import TaskManager, TaskStatus, TaskPriority
 from .task_validator import TaskValidator
 from .task_analytics import TaskAnalytics
 from .task_templates import TaskTemplates
+from .changelog_generator import ChangelogGenerator
+from .task_deduplicator import TaskDeduplicator, MergeStrategy
 from utils.logger import logger, setup_logging
 
 # Initialize enhanced logging for CLI
@@ -28,9 +34,11 @@ class TaskCLI:
     
     def __init__(self, tasks_root: str = "tasks"):
         self.task_manager = TaskManager(tasks_root)
-        self.validator = TaskValidator()
+        self.validator = TaskValidator(task_manager=self.task_manager)
         self.analytics = TaskAnalytics(self.task_manager.tasks_cache)
         self.templates = TaskTemplates()
+        self.changelog_generator = ChangelogGenerator(self.task_manager)
+        self.deduplicator = TaskDeduplicator(self.task_manager)
     
     def create_task(self, args) -> None:
         """Create a new task"""
@@ -129,6 +137,27 @@ class TaskCLI:
             else:
                 logger.error(f"❌ Failed to add note to task {args.task_id}")
             print(f"❌ Failed to add note to task {args.task_id}")
+
+    def update_task(self, args) -> None:
+        """Update task fields."""
+        updates = {}
+        if args.title: updates['title'] = args.title
+        if args.description: updates['description'] = args.description
+        if args.agent: updates['agent'] = args.agent
+        if args.priority: updates['priority'] = TaskPriority(args.priority)
+        if args.estimated_hours: updates['estimated_hours'] = args.estimated_hours
+        if args.due_date: updates['due_date'] = datetime.fromisoformat(args.due_date)
+        if args.tags: updates['tags'] = args.tags.split(',')
+        if args.dependencies: updates['dependencies'] = args.dependencies.split(',')
+
+        success = self.task_manager.update_task_fields(args.task_id, **updates)
+
+        if success:
+            logger.info(f"Updated task {args.task_id}")
+            print(f"✅ Updated task {args.task_id}")
+        else:
+            logger.error(f"Failed to update task {args.task_id}")
+            print(f"❌ Failed to update task {args.task_id}")
     
     def list_tasks(self, args) -> None:
         """List tasks with optional filters"""
@@ -169,6 +198,16 @@ class TaskCLI:
             tasks.sort(key=lambda t: t.updated_at or datetime.min)
         
         # Display tasks
+        if args.blockers:
+            blocking_tasks = self.task_manager.get_blocking_tasks()
+            if blocking_tasks:
+                print("🔗 Tasks Blocking Others:")
+                for task in blocking_tasks:
+                    print(f"  🔗 {task.id}: {task.title} ({task.agent})")
+            else:
+                print("No tasks are currently blocking others.")
+            return
+
         if not tasks:
             if hasattr(logger, 'query_result'):
                 logger.query_result("No tasks found matching criteria")
@@ -183,6 +222,10 @@ class TaskCLI:
             self._display_tasks_json(tasks)
         else:
             self._display_tasks_list(tasks)
+        
+        # Show action help if there are tasks with actions
+        if tasks and args.format != 'json':
+            self._show_action_help()
     
     def show_task(self, args) -> None:
         """Show detailed information about a task"""
@@ -218,8 +261,14 @@ class TaskCLI:
         if task.notes:
             print(f"\nNotes:\n{task.notes}")
         
-        print(f"\nCreated: {task.created_at.strftime('%Y-%m-%d %H:%M')}")
-        print(f"Updated: {task.updated_at.strftime('%Y-%m-%d %H:%M')}")
+        if task.created_at:
+            print(f"\nCreated: {task.created_at.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            print("\nCreated: N/A")
+        if task.updated_at:
+            print(f"Updated: {task.updated_at.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            print("Updated: N/A")
         
         # Show validation if requested
         if args.validate:
@@ -227,6 +276,7 @@ class TaskCLI:
     
     def validate_tasks(self, args) -> None:
         """Validate tasks"""
+        self.task_manager.load_all_tasks() # Reload tasks to ensure up-to-date cache
         if args.task_id:
             self._validate_task(args.task_id)
         else:
@@ -256,14 +306,17 @@ class TaskCLI:
             else:
                 logger.warning(f"⚠️ Task {task_id} has {len(errors)} validation issues")
             print(f"⚠️ Task {task_id} validation issues:")
+            for warning in warnings:
+                icon = {'error': '❌', 'warning': '⚠️', 'info': 'ℹ️'}[warning.severity]
+                print(f"  {icon} {warning.field}: {warning.message}")
             for error in errors:
                 icon = {'error': '❌', 'warning': '⚠️', 'info': 'ℹ️'}[error.severity]
                 print(f"  {icon} {error.field}: {error.message}")
     
     def _validate_all_tasks(self) -> None:
         """Validate all tasks in the system"""
-        errors = self.validator.validate_task_system(self.task_manager.tasks_cache)
-        report = self.validator.generate_validation_report(errors)
+        warnings, errors = self.validator.validate_task_system(self.task_manager.tasks_cache)
+        report = self.validator.generate_validation_report(warnings, errors)
         print(report)
     
     def auto_fix_tasks(self, args) -> None:
@@ -327,8 +380,8 @@ class TaskCLI:
             if task.status == TaskStatus.TODO and task.dependencies:
                 # Check if dependencies are satisfied
                 deps_satisfied = all(
-                    self.task_manager.get_task(dep_id) and 
-                    self.task_manager.get_task(dep_id).status == TaskStatus.COMPLETE
+                    (dep_task := self.task_manager.get_task(dep_id)) is not None and 
+                    dep_task.status == TaskStatus.COMPLETE
                     for dep_id in task.dependencies
                 )
                 
@@ -340,6 +393,212 @@ class TaskCLI:
                     logger.info(f"Auto-fixed task {task.id} status: {old_status} -> blocked (dependencies not satisfied)")
         
         return fixes
+
+    def update_blockers(self, args) -> None:
+        """Update the status of tasks that are blocking others."""
+        updated_tasks = self.task_manager.update_blocking_task_statuses()
+        if updated_tasks:
+            logger.info(f"Updated {len(updated_tasks)} tasks to BLOCKED_BY status.")
+            print(f"Updated {len(updated_tasks)} tasks to BLOCKED_BY status:")
+            for task_id in updated_tasks:
+                print(f"  - {task_id}")
+        else:
+            logger.info("No tasks found to update to BLOCKED_BY status.")
+            print("No tasks found to update to BLOCKED_BY status.")
+
+    def generate_changelog(self, args) -> None:
+        """Generate project changelog."""
+        changelog_content = self.changelog_generator.generate_changelog()
+        with open(args.output, 'w') as f:
+            f.write(changelog_content)
+        logger.info(f"Changelog generated to {args.output}")
+        print(f"✅ Changelog generated to {args.output}")
+
+    def promote_dependencies(self, args) -> None:
+        """Promote priority of tasks that are blocking others."""
+        promoted_tasks = self.task_manager.promote_dependency_priority()
+        if promoted_tasks:
+            logger.info(f"Promoted {len(promoted_tasks)} tasks: {', '.join(promoted_tasks)}")
+            print(f"✅ Promoted {len(promoted_tasks)} tasks:")
+            for task_id in promoted_tasks:
+                print(f"  • {task_id}")
+        else:
+            logger.info("No tasks found to promote.")
+            print("No tasks found to promote.")
+
+    def assign_due_dates(self, args) -> None:
+        """Assigns due dates to critical priority tasks missing them."""
+        updated_tasks = self.task_manager.assign_due_dates_to_critical_tasks()
+        if updated_tasks:
+            logger.info(f"Assigned due dates to {len(updated_tasks)} critical tasks.")
+            print(f"✅ Assigned due dates to {len(updated_tasks)} critical tasks:")
+            for task_id in updated_tasks:
+                print(f"  • {task_id}")
+        else:
+            logger.info("No critical tasks found missing due dates.")
+            print("No critical tasks found missing due dates.")
+    
+    def find_duplicates(self, args) -> None:
+        """Find potential duplicate tasks"""
+        duplicates = self.deduplicator.find_duplicates(include_completed=args.include_completed)
+        
+        if not duplicates:
+            logger.info("No duplicate tasks found.")
+            print("✅ No duplicate tasks found!")
+            return
+        
+        console = Console()
+        
+        # Show summary
+        stats = self.deduplicator.get_duplicate_stats()
+        print(f"🔍 Found {stats['total_duplicates']} potential duplicates")
+        print(f"   Auto-mergeable: {stats['auto_mergeable']}")
+        print(f"   High confidence: {stats['high_confidence']}")
+        print(f"   Medium confidence: {stats['medium_confidence']}")
+        print(f"   Low confidence: {stats['low_confidence']}")
+        
+        if args.format == 'table':
+            self._display_duplicates_table(duplicates)
+        elif args.format == 'detailed':
+            self._display_duplicates_detailed(duplicates)
+        else:
+            self._display_duplicates_list(duplicates)
+    
+    def auto_merge_duplicates(self, args) -> None:
+        """Automatically merge duplicate tasks"""
+        print("🔍 Scanning for auto-mergeable duplicates...")
+        
+        merged_tasks = self.deduplicator.auto_merge_duplicates()
+        
+        if merged_tasks:
+            print(f"✅ Successfully auto-merged {len(merged_tasks)} duplicate pairs:")
+            for merge in merged_tasks:
+                print(f"  • {merge}")
+            
+            # Reload tasks after merging
+            self.task_manager.load_all_tasks()
+            print(f"\n📊 Task count after merge: {len(self.task_manager.tasks_cache)}")
+        else:
+            print("ℹ️ No auto-mergeable duplicates found")
+    
+    def merge_tasks_manual(self, args) -> None:
+        """Manually merge two tasks"""
+        try:
+            preview = self.deduplicator.manual_merge_preview(args.task1, args.task2)
+            
+            console = Console()
+            print("🔍 Merge Preview:")
+            print(f"Task 1: {preview['task1']['title']} ({args.task1})")
+            print(f"Task 2: {preview['task2']['title']} ({args.task2})")
+            
+            if preview['conflicts']:
+                print("\n⚠️ Conflicts found:")
+                for conflict in preview['conflicts']:
+                    print(f"  {conflict['field']}: '{conflict['task1_value']}' vs '{conflict['task2_value']}'")
+            
+            if not args.auto_resolve:
+                # Interactive merge - simplified for now
+                response = input("\nProceed with suggested merge? [y/N]: ")
+                if response.lower() != 'y':
+                    print("❌ Merge cancelled")
+                    return
+            
+            # Create merge strategy
+            strategy = MergeStrategy(
+                keep_task_id=args.task1,  # Keep first task by default
+                remove_task_id=args.task2,
+                field_sources={},  # Use defaults from auto-merge logic
+                merge_notes=True,
+                merge_dependencies=True,
+                merge_tags=True
+            )
+            
+            success = self.deduplicator.execute_manual_merge(strategy)
+            
+            if success:
+                print(f"✅ Successfully merged {args.task2} into {args.task1}")
+                # Reload tasks
+                self.task_manager.load_all_tasks()
+            else:
+                print("❌ Failed to merge tasks")
+                
+        except Exception as e:
+            logger.error(f"Error in manual merge: {e}")
+            print(f"❌ Error: {e}")
+    
+    def _display_duplicates_list(self, duplicates) -> None:
+        """Display duplicates in simple list format"""
+        console = Console()
+        
+        for i, dup in enumerate(duplicates, 1):
+            confidence_color = {
+                'high': 'red',
+                'medium': 'yellow', 
+                'low': 'blue'
+            }.get(dup.confidence, 'white')
+            
+            auto_merge_icon = "🔄" if dup.auto_mergeable else "👥"
+            
+            clickable_id1 = self._make_clickable_task_id(dup.task1)
+            clickable_id2 = self._make_clickable_task_id(dup.task2)
+            
+            console.print(f"{i}. {auto_merge_icon} [{confidence_color}]{dup.confidence.upper()}[/{confidence_color}] "
+                         f"({dup.similarity_score:.2f}) {clickable_id1} ↔ {clickable_id2}")
+            console.print(f"   '{dup.task1.title}' ↔ '{dup.task2.title}'")
+            console.print(f"   Criteria: {', '.join(dup.match_criteria)}")
+            console.print()
+    
+    def _display_duplicates_table(self, duplicates) -> None:
+        """Display duplicates in table format"""
+        console = Console()
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Score", justify="center", width=6)
+        table.add_column("Confidence", justify="center")
+        table.add_column("Auto-Merge", justify="center")
+        table.add_column("Task 1", min_width=15)
+        table.add_column("Task 2", min_width=15)
+        table.add_column("Criteria")
+        
+        for dup in duplicates:
+            confidence_color = {
+                'high': 'red',
+                'medium': 'yellow',
+                'low': 'blue'
+            }.get(dup.confidence, 'white')
+            
+            table.add_row(
+                f"{dup.similarity_score:.2f}",
+                f"[{confidence_color}]{dup.confidence}[/{confidence_color}]",
+                "🔄" if dup.auto_mergeable else "👥",
+                f"{dup.task1.id}\n{dup.task1.title[:30]}...",
+                f"{dup.task2.id}\n{dup.task2.title[:30]}...",
+                ", ".join(dup.match_criteria)
+            )
+        
+        console.print(table)
+    
+    def _display_duplicates_detailed(self, duplicates) -> None:
+        """Display duplicates with detailed information"""
+        console = Console()
+        
+        for i, dup in enumerate(duplicates, 1):
+            console.print(f"\n[bold]Duplicate Pair {i}[/bold]")
+            console.print(f"Similarity: {dup.similarity_score:.2f} | Confidence: {dup.confidence} | Auto-merge: {'Yes' if dup.auto_mergeable else 'No'}")
+            console.print(f"Criteria: {', '.join(dup.match_criteria)}")
+            
+            console.print(f"\n[bold blue]Task 1:[/bold blue] {dup.task1.id}")
+            console.print(f"Title: {dup.task1.title}")
+            console.print(f"Agent: {dup.task1.agent} | Status: {dup.task1.status.value} | Priority: {dup.task1.priority.value}")
+            if dup.task1.tags:
+                console.print(f"Tags: {', '.join(dup.task1.tags)}")
+            
+            console.print(f"\n[bold green]Task 2:[/bold green] {dup.task2.id}")
+            console.print(f"Title: {dup.task2.title}")
+            console.print(f"Agent: {dup.task2.agent} | Status: {dup.task2.status.value} | Priority: {dup.task2.priority.value}")
+            if dup.task2.tags:
+                console.print(f"Tags: {', '.join(dup.task2.tags)}")
+            
+            console.print("-" * 80)
     
     def show_analytics(self, args) -> None:
         """Show task analytics"""
@@ -477,7 +736,7 @@ class TaskCLI:
         """List available task templates"""
         templates = self.templates.list_templates(
             agent=args.agent,
-            tags=args.tags.split(',') if args.tags else None
+            tags=args.tags.split(',') if args.tags else []
         )
         
         if not templates:
@@ -552,32 +811,62 @@ class TaskCLI:
             print("No tasks ready for auto-transition")
     
     def _display_tasks_table(self, tasks) -> None:
-        """Display tasks in table format"""
+        """Display tasks in table format using rich with clickable action links."""
         if not tasks:
             return
-        
-        # Calculate column widths
-        id_width = max(len("ID"), max(len(t.id) for t in tasks))
-        title_width = max(len("Title"), max(len(t.title[:40]) for t in tasks))
-        agent_width = max(len("Agent"), max(len(t.agent) for t in tasks))
-        status_width = max(len("Status"), max(len(t.status.value) for t in tasks))
-        
-        # Header
-        header = f"{'ID':<{id_width}} {'Title':<{title_width}} {'Agent':<{agent_width}} {'Status':<{status_width}} Priority"
-        print(header)
-        print("-" * len(header))
-        
-        # Rows
-        for task in tasks:
-            title_truncated = task.title[:40] + "..." if len(task.title) > 40 else task.title
-            print(f"{task.id:<{id_width}} {title_truncated:<{title_width}} {task.agent:<{agent_width}} {task.status.value:<{status_width}} {task.priority.value}")
-    
-    def _display_tasks_list(self, tasks) -> None:
-        """Display tasks in list format"""
+
+        console = Console()
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("ID", style="dim", width=12)
+        table.add_column("Title", min_width=20)
+        table.add_column("Agent", justify="right")
+        table.add_column("Status", justify="right")
+        table.add_column("Priority", justify="right")
+        table.add_column("Actions", justify="center", min_width=30)
+
         for task in tasks:
             status_icon = {
                 TaskStatus.PENDING: "⏳",
                 TaskStatus.BLOCKED: "🚫", 
+                TaskStatus.BLOCKED_BY: "🔗",
+                TaskStatus.TODO: "📋",
+                TaskStatus.IN_PROGRESS: "🔄",
+                TaskStatus.COMPLETE: "✅",
+                TaskStatus.CANCELLED: "❌"
+            }.get(task.status, "❓")
+            
+            priority_color = {
+                TaskPriority.CRITICAL: "red",
+                TaskPriority.HIGH: "yellow", 
+                TaskPriority.MEDIUM: "blue",
+                TaskPriority.LOW: "white"
+            }.get(task.priority, "white")
+
+            # Generate compact action links for table format
+            action_links = self._generate_compact_action_links(task)
+
+            # Generate clickable task ID link
+            clickable_id = self._make_clickable_task_id(task)
+            
+            table.add_row(
+                clickable_id,
+                task.title,
+                task.agent,
+                f"{status_icon} {task.status.value}",
+                f"[{priority_color}]{task.priority.value}[/{priority_color}]",
+                action_links
+            )
+        
+        console.print(table)
+    
+    def _display_tasks_list(self, tasks) -> None:
+        """Display tasks in list format with clickable action links"""
+        console = Console()
+        for task in tasks:
+            status_icon = {
+                TaskStatus.PENDING: "⏳",
+                TaskStatus.BLOCKED: "🚫", 
+                TaskStatus.BLOCKED_BY: "🔗",
                 TaskStatus.TODO: "📋",
                 TaskStatus.IN_PROGRESS: "🔄",
                 TaskStatus.COMPLETE: "✅",
@@ -591,7 +880,110 @@ class TaskCLI:
                 TaskPriority.LOW: "⚪"
             }.get(task.priority, "❓")
             
-            print(f"{status_icon} {priority_icon} {task.id}: {task.title} ({task.agent})")
+            # Generate clickable task ID link
+            clickable_id = self._make_clickable_task_id(task)
+            
+            # Generate clickable action links based on current status
+            action_links = self._generate_action_links(task)
+            
+            console.print(f"{status_icon} {priority_icon} {clickable_id}: {task.title} ([bold]{task.agent}[/bold]) {action_links}")
+    
+    def _generate_action_links(self, task) -> str:
+        """Generate action links for a task based on its status"""
+        links = []
+        
+        # Status-specific actions with copy-paste friendly commands
+        if task.status == TaskStatus.TODO:
+            links.append("▶️ [blue]Start[/blue]")
+            links.append("✅ [green]Complete[/green]")
+        elif task.status == TaskStatus.IN_PROGRESS:
+            links.append("✅ [green]Complete[/green]")
+            links.append("🚫 [red]Block[/red]")
+        elif task.status == TaskStatus.BLOCKED:
+            links.append("📋 [yellow]Unblock[/yellow]")
+        elif task.status == TaskStatus.COMPLETE:
+            links.append("🔄 [cyan]Reopen[/cyan]")
+        elif task.status == TaskStatus.PENDING:
+            links.append("📋 [yellow]Ready[/yellow]")
+        
+        # Universal actions
+        links.append("👁️ [dim]View[/dim]")
+        links.append("💬 [dim]Note[/dim]")
+        
+        return " | ".join(links) if links else ""
+    
+    def _generate_compact_action_links(self, task) -> str:
+        """Generate compact action links for table format"""
+        links = []
+        
+        # Status-specific primary actions (more compact, emoji only)
+        if task.status == TaskStatus.TODO:
+            links.append("[blue]▶️[/blue]")
+            links.append("[green]✅[/green]")
+        elif task.status == TaskStatus.IN_PROGRESS:
+            links.append("[green]✅[/green]")
+            links.append("[red]🚫[/red]")
+        elif task.status == TaskStatus.BLOCKED:
+            links.append("[yellow]📋[/yellow]")
+        elif task.status == TaskStatus.COMPLETE:
+            links.append("[cyan]🔄[/cyan]")
+        elif task.status == TaskStatus.PENDING:
+            links.append("[yellow]📋[/yellow]")
+        
+        # Universal actions
+        links.append("[dim]👁️[/dim]")
+        links.append("[dim]💬[/dim]")
+        
+        return " ".join(links) if links else ""
+    
+    def _make_clickable_task_id(self, task) -> str:
+        """Generate a clickable task ID link to open the file in an IDE"""
+        # Find the task file path
+        task_file_path = self._get_task_file_path(task)
+        
+        if task_file_path:
+            # Create file:// URL for the task file
+            import urllib.parse
+            file_url = f"file://{urllib.parse.quote(str(task_file_path))}"
+            
+            # Use OSC 8 hyperlink format for terminal compatibility
+            return f"\033]8;;{file_url}\033\\{task.id}\033]8;;\033\\"
+        else:
+            # Fallback to plain text if file not found
+            return task.id
+    
+    def _get_task_file_path(self, task) -> str:
+        """Get the full file path for a task"""
+        import os
+        
+        # Get the task file from the appropriate status directory
+        status_dir = self.task_manager.status_dirs.get(task.status)
+        if status_dir:
+            task_file = status_dir / f"{task.id}.md"
+            if task_file.exists():
+                return os.path.abspath(task_file)
+        
+        # If not found in expected location, search all directories
+        for status_dir in self.task_manager.status_dirs.values():
+            task_file = status_dir / f"{task.id}.md"
+            if task_file.exists():
+                return os.path.abspath(task_file)
+        
+        return None
+    
+    def _show_action_help(self) -> None:
+        """Show help for action buttons in task list"""
+        console = Console()
+        console.print("\n[bold]Interactive Features:[/bold]")
+        console.print("🔗  Task IDs are clickable links that open files in your IDE")
+        console.print("▶️  Start task (todo → in_progress)")
+        console.print("✅  Complete task (→ complete)")
+        console.print("🚫  Block task (→ blocked)")
+        console.print("📋  Make ready/unblock (→ todo)")
+        console.print("🔄  Reopen task (complete → in_progress)")
+        console.print("👁️  View task details")
+        console.print("💬  Add quick note")
+        console.print("\n[dim]Copy commands from 'python -m src.task_management.cli [action] [task-id] [status]'[/dim]")
     
     def _display_tasks_json(self, tasks) -> None:
         """Display tasks in JSON format"""
@@ -629,7 +1021,19 @@ def main():
     add_note_parser = subparsers.add_parser('add-note', help='Add a note to a task')
     add_note_parser.add_argument('task_id', help='Task ID')
     add_note_parser.add_argument('note', help='The note to add')
-    
+
+    # Update task command
+    update_parser = subparsers.add_parser('update', help='Update task fields')
+    update_parser.add_argument('task_id', help='Task ID')
+    update_parser.add_argument('--title', help='New title')
+    update_parser.add_argument('--description', help='New description')
+    update_parser.add_argument('--agent', help='New agent')
+    update_parser.add_argument('--priority', choices=['low', 'medium', 'high', 'critical'], help='New priority')
+    update_parser.add_argument('--estimated-hours', type=float, help='New estimated hours')
+    update_parser.add_argument('--due-date', help='New due date (ISO format)')
+    update_parser.add_argument('--tags', help='New comma-separated tags')
+    update_parser.add_argument('--dependencies', help='New comma-separated dependency IDs')
+
     # List tasks command
     list_parser = subparsers.add_parser('list', help='List tasks')
     list_parser.add_argument('--agent', help='Filter by agent')
@@ -640,6 +1044,7 @@ def main():
     list_parser.add_argument('--include-completed', action='store_true', help='Include completed tasks in output')
     list_parser.add_argument('--sort-by', choices=['priority', 'created', 'updated'], default='priority')
     list_parser.add_argument('--format', choices=['list', 'table', 'json'], default='list')
+    list_parser.add_argument('--blockers', action='store_true', help='Show tasks that are blocking other tasks')
     
     # Show task command
     show_parser = subparsers.add_parser('show', help='Show task details')
@@ -671,6 +1076,31 @@ def main():
     auto_fix_parser = subparsers.add_parser('auto-fix', help='Automatically fix common task issues')
     auto_fix_parser.add_argument('--no-revalidate', action='store_true', 
                                 help='Skip re-validation after fixes')
+
+    # Update blockers command
+    update_blockers_parser = subparsers.add_parser('update-blockers', help='Update status of tasks that are blocking others')
+
+    # Generate changelog command
+    changelog_parser = subparsers.add_parser('generate-changelog', help='Generate project changelog')
+    changelog_parser.add_argument('--output', default='CHANGELOG.md', help='Output file path for changelog')
+
+    # Promote dependencies command
+    promote_deps_parser = subparsers.add_parser('promote-dependencies', help='Promote priority of tasks that are blocking others')
+
+    # Assign due dates command
+    assign_due_dates_parser = subparsers.add_parser('assign-due-dates', help='Assigns due dates to critical tasks missing them')
+    
+    # Deduplication commands
+    find_dups_parser = subparsers.add_parser('find-duplicates', help='Find potential duplicate tasks')
+    find_dups_parser.add_argument('--include-completed', action='store_true', help='Include completed tasks in search')
+    find_dups_parser.add_argument('--format', choices=['list', 'table', 'detailed'], default='list', help='Output format')
+    
+    auto_merge_parser = subparsers.add_parser('auto-merge', help='Automatically merge duplicate tasks')
+    
+    merge_manual_parser = subparsers.add_parser('merge-tasks', help='Manually merge two tasks')
+    merge_manual_parser.add_argument('task1', help='First task ID (will be kept)')
+    merge_manual_parser.add_argument('task2', help='Second task ID (will be merged into first)')
+    merge_manual_parser.add_argument('--auto-resolve', action='store_true', help='Auto-resolve conflicts without prompting')
     
     args = parser.parse_args()
     
@@ -719,6 +1149,20 @@ def main():
             cli.auto_transition(args)
         elif args.command == 'auto-fix':
             cli.auto_fix_tasks(args)
+        elif args.command == 'update-blockers':
+            cli.update_blockers(args)
+        elif args.command == 'generate-changelog':
+            cli.generate_changelog(args)
+        elif args.command == 'promote-dependencies':
+            cli.promote_dependencies(args)
+        elif args.command == 'assign-due-dates':
+            cli.assign_due_dates(args)
+        elif args.command == 'find-duplicates':
+            cli.find_duplicates(args)
+        elif args.command == 'auto-merge':
+            cli.auto_merge_duplicates(args)
+        elif args.command == 'merge-tasks':
+            cli.merge_tasks_manual(args)
         
         if hasattr(logger, 'command_complete'):
             logger.command_complete(f"Command {args.command} completed successfully")
@@ -732,7 +1176,91 @@ def main():
             logger.error(f"❌ Command {args.command} failed: {str(e)}")
         print(f"❌ Command failed: {str(e)}")
         sys.exit(1)
+    finally:
+        print("\n--- Reminder ---")
+        print("Remember to update your tasks (status, notes, etc.) before committing changes.")
+        print("This ensures your progress is accurately reflected.")
 
+
+@click.group()
+def cli():
+    """Agent Task Management CLI"""
+    pass
+
+@cli.command()
+@click.option('--id', 'task_id', required=True, help='Task ID')
+@click.option('--title', required=True, help='Task title')
+@click.option('--description', help='Task description')
+@click.option('--agent', required=True, help='Assigned agent')
+@click.option('--priority', type=click.Choice(['low', 'medium', 'high', 'critical']), default='medium')
+@click.option('--estimated-hours', type=float, help='Estimated hours')
+@click.option('--due-date', help='Due date (ISO format)')
+@click.option('--tags', help='Comma-separated tags')
+@click.option('--dependencies', help='Comma-separated dependency IDs')
+@click.option('--template', help='Template ID to use')
+@click.option('--template-vars', multiple=True, help='Template variables (key=value)')
+@click.option('--validate', is_flag=True, help='Validate after creation')
+@click.option('--tasks-root', default='tasks', help='Tasks root directory')
+def create(task_id, title, description, agent, priority, estimated_hours, due_date, tags, dependencies, template, template_vars, validate, tasks_root):
+    """Create a new task"""
+    # Convert to argparse-like namespace for compatibility
+    class Args:
+        def __init__(self):
+            self.id = task_id
+            self.title = title
+            self.description = description
+            self.agent = agent
+            self.priority = priority
+            self.estimated_hours = estimated_hours
+            self.due_date = due_date
+            self.tags = tags
+            self.dependencies = dependencies
+            self.template = template
+            self.template_vars = list(template_vars) if template_vars else None
+            self.validate = validate
+    
+    cli_instance = TaskCLI(tasks_root=tasks_root)
+    cli_instance.create_task(Args())
+
+@cli.command(name='list')
+@click.option('--tasks-root', default='tasks', help='Tasks root directory')
+def list_tasks_cmd(tasks_root):
+    """List tasks"""
+    class Args:
+        def __init__(self):
+            self.agent = None
+            self.status = None
+            self.priority = None
+            self.tag = None
+            self.overdue = False
+            self.include_completed = False
+            self.sort_by = 'priority'
+            self.format = 'list'
+            self.blockers = False
+    
+    cli_instance = TaskCLI(tasks_root=tasks_root)
+    cli_instance.list_tasks(Args())
+
+@cli.command()
+@click.argument('task_id')
+@click.argument('status', type=click.Choice(['pending', 'blocked', 'todo', 'in_progress', 'complete', 'cancelled']))
+@click.option('--notes', help='Status change notes')
+@click.option('--tasks-root', default='tasks', help='Tasks root directory')
+def status(task_id, status, notes, tasks_root):
+    """Update task status"""
+    class Args:
+        def __init__(self):
+            self.task_id = task_id
+            self.status = status
+            self.notes = notes
+    
+    cli_instance = TaskCLI(tasks_root=tasks_root)
+    cli_instance.update_status(Args())
 
 if __name__ == '__main__':
-    main()
+    import sys
+    # Use the original argparse-based main for command line usage
+    if len(sys.argv) > 1:
+        main()
+    else:
+        cli()

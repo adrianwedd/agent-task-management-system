@@ -24,6 +24,7 @@ A comprehensive, intelligent task management system designed for agent-based wor
 - **Rich Formatting** - Color-coded output with emoji indicators for quick recognition
 - **Flexible Filtering** - Filter by agent, status, priority, tags, or custom criteria
 - **Smart Defaults** - Hides completed tasks by default, includes when needed
+- **Code Quality Enforcement** - Integrated `pylint` for Python and `markdownlint` for Markdown files
 
 ### 📊 **Analytics & Reporting**
 - **Performance Metrics** - Task completion rates, cycle times, and velocity trends
@@ -108,6 +109,13 @@ python -m src.task_management.cli validate
 python -m src.task_management.cli auto-fix
 ```
 
+### Linting
+
+```bash
+npm run lint:md
+npm run lint:py
+```
+
 ## 🎯 Advanced Features
 
 ### Smart Filtering & Views
@@ -167,6 +175,7 @@ The system supports specialized agent types with specific capabilities:
 - **DEVOPS** - Deployment, infrastructure, CI/CD
 - **AUTOMATION** - Process automation, scripting
 - **REVIEWER** - Code review, auditing, quality checks
+- **MANAGER** - Project management, coordination, and reward systems
 
 ## 📈 System Intelligence
 
@@ -180,6 +189,7 @@ The system supports specialized agent types with specific capabilities:
 - **Dependency-Based Promotion** - Elevates priority of tasks blocking high-priority work
 - **Workload Balancing** - Identifies agent overallocation and suggests redistribution
 - **Critical Path Detection** - Highlights tasks on the critical path to completion
+- **Reward System & Leaderboard** - Gamified incentives for agent performance
 
 ## 🔧 Configuration
 

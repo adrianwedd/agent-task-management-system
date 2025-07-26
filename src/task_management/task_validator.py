@@ -1,3 +1,4 @@
+
 """
 Task Validation System
 
@@ -6,12 +7,19 @@ for the Agent Task management system.
 """
 
 import re
-from typing import List, Dict, Set, Optional, Any
+from typing import List, Dict, Set, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+from enum import Enum
 
 from .task_manager import Task, TaskStatus, TaskPriority
-from utils.logger import logger
+from .config import MAX_TAGS, AGENT_CAPABILITIES, VALID_TAGS
+
+
+class ValidationSeverity(Enum):
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
 
 
 @dataclass
@@ -26,249 +34,202 @@ class ValidationError:
 class TaskValidator:
     """Validates tasks and task system integrity"""
     
-    def __init__(self):
-        self.agent_names = self._load_valid_agents()
-        self.validation_rules = self._initialize_validation_rules()
-    
-    def _load_valid_agents(self) -> Set[str]:
-        """Load valid agent names from the system"""
-        # Generic agent taxonomy for task management systems
-        return {
-            'DEVELOPER',      # Software development and implementation
-            'TESTER',         # Quality assurance and testing
-            'ARCHITECT',      # System design and architecture
-            'DEVOPS',         # Operations and deployment
-            'ANALYST',        # Analysis and research
-            'DESIGNER',       # UI/UX and design tasks
-            'DOCUMENTER',     # Documentation and content
-            'REVIEWER',       # Code and content review
-            'MANAGER',        # Project management and coordination
-            'RESEARCHER',     # Research and investigation
-            'SECURITY',       # Security analysis and implementation
-            'AUTOMATION',     # Process automation and tooling
-            
-            # Legacy agents (maintained for backward compatibility)
-            'CODEFORGE',      # Maps to DEVELOPER
-            'TESTCRAFTERPRO', # Maps to TESTER
-            'BUILDFLOW',      # Maps to DEVOPS
-            'AUTOSYNTH',      # Maps to AUTOMATION
-        }
-    
-    def _initialize_validation_rules(self) -> Dict[str, Any]:
-        """Initialize validation rules"""
-        return {
+    def __init__(self, task_manager):
+        self.task_manager = task_manager
+        self.validation_rules = {
             'id_pattern': re.compile(r'^[a-zA-Z0-9_-]+$'),
             'max_title_length': 100,
             'max_description_length': 5000,
             'required_fields': ['id', 'title', 'description', 'agent', 'status'],
             'max_dependencies': 10,
-            'max_tags': 5,
+            'max_tags': MAX_TAGS,
             'valid_tag_pattern': re.compile(r'^[a-zA-Z0-9_-]+$')
         }
     
-    def validate_task(self, task: Task) -> List[ValidationError]:
-        """Validate a single task"""
+    def validate_task(self, task: Task) -> Tuple[List[ValidationError], List[ValidationError]]:
+        """Validate a single task and return (warnings, errors)"""
+        warnings = []
         errors = []
         
-        # Validate required fields
-        errors.extend(self._validate_required_fields(task))
+        all_validations = [
+            self._validate_required_fields,
+            self._validate_field_formats,
+            self._validate_business_rules,
+            self._validate_agent_assignment,
+            self._validate_dates,
+            self._validate_task_dependencies
+        ]
         
-        # Validate field formats and constraints
-        errors.extend(self._validate_field_formats(task))
+        for validator_func in all_validations:
+            results = validator_func(task)
+            for result in results:
+                if result.severity == ValidationSeverity.WARNING.value:
+                    warnings.append(result)
+                elif result.severity == ValidationSeverity.ERROR.value:
+                    errors.append(result)
         
-        # Validate business rules
-        errors.extend(self._validate_business_rules(task))
-        
-        # Validate agent assignment
-        errors.extend(self._validate_agent_assignment(task))
-        
-        # Validate dates
-        errors.extend(self._validate_dates(task))
-        
-        # Validate dependencies
-        errors.extend(self._validate_task_dependencies(task))
-        
-        return errors
+        return warnings, errors
     
     def _validate_required_fields(self, task: Task) -> List[ValidationError]:
         """Validate that all required fields are present"""
-        errors = []
+        results = []
         
         for field in self.validation_rules['required_fields']:
             value = getattr(task, field, None)
             if not value:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field=field,
                     message=f"Required field '{field}' is missing or empty",
-                    severity='error',
+                    severity=ValidationSeverity.ERROR.value,
                     task_id=task.id if hasattr(task, 'id') else None
                 ))
         
-        return errors
+        return results
     
     def _validate_field_formats(self, task: Task) -> List[ValidationError]:
         """Validate field formats and constraints"""
-        errors = []
+        results = []
         
         # Validate ID format
         if task.id and not self.validation_rules['id_pattern'].match(task.id):
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='id',
                 message="Task ID must contain only letters, numbers, hyphens, and underscores",
-                severity='error',
+                severity=ValidationSeverity.ERROR.value,
                 task_id=task.id
             ))
         
         # Validate title length
         if task.title and len(task.title) > self.validation_rules['max_title_length']:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='title',
                 message=f"Title exceeds maximum length of {self.validation_rules['max_title_length']} characters",
-                severity='warning',
+                severity=ValidationSeverity.WARNING.value,
                 task_id=task.id
             ))
         
         # Validate description length
         if task.description and len(task.description) > self.validation_rules['max_description_length']:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='description',
                 message=f"Description exceeds maximum length of {self.validation_rules['max_description_length']} characters",
-                severity='warning',
+                severity=ValidationSeverity.WARNING.value,
                 task_id=task.id
             ))
         
         # Validate dependencies count
         if task.dependencies and len(task.dependencies) > self.validation_rules['max_dependencies']:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='dependencies',
                 message=f"Task has too many dependencies (max: {self.validation_rules['max_dependencies']})",
-                severity='warning',
+                severity=ValidationSeverity.WARNING.value,
                 task_id=task.id
             ))
         
         # Validate tags
         if task.tags:
             if len(task.tags) > self.validation_rules['max_tags']:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='tags',
                     message=f"Too many tags (max: {self.validation_rules['max_tags']})",
-                    severity='warning',
+                    severity=ValidationSeverity.WARNING.value,
                     task_id=task.id
                 ))
             
             for tag in task.tags:
-                if not self.validation_rules['valid_tag_pattern'].match(tag):
-                    errors.append(ValidationError(
+                if tag not in VALID_TAGS:
+                    results.append(ValidationError(
                         field='tags',
-                        message=f"Invalid tag format: '{tag}'. Tags must contain only letters, numbers, hyphens, and underscores",
-                        severity='warning',
+                        message=f"Invalid tag: '{tag}'.",
+                        severity=ValidationSeverity.WARNING.value,
                         task_id=task.id
                     ))
         
-        return errors
+        return results
     
     def _validate_business_rules(self, task: Task) -> List[ValidationError]:
         """Validate business logic rules"""
-        errors = []
+        results = []
         
         # Validate status transitions based on dependencies
         if task.status == TaskStatus.TODO and task.dependencies:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='status',
                 message="Tasks with unresolved dependencies should be BLOCKED or PENDING, not TODO",
-                severity='warning',
+                severity=ValidationSeverity.WARNING.value,
                 task_id=task.id
             ))
         
         # Validate completion requirements
         if task.status == TaskStatus.COMPLETE:
             if not task.updated_at:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='updated_at',
                     message="Completed tasks must have an updated_at timestamp",
-                    severity='error',
+                    severity=ValidationSeverity.ERROR.value,
                     task_id=task.id
                 ))
         
         # Validate priority vs due date
         if task.priority == TaskPriority.CRITICAL and not task.due_date:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='due_date',
                 message="Critical priority tasks should have a due date",
-                severity='warning',
+                severity=ValidationSeverity.WARNING.value,
                 task_id=task.id
             ))
         
         # Validate estimated vs actual hours
         if task.actual_hours and task.estimated_hours:
             if task.actual_hours > task.estimated_hours * 2:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='actual_hours',
                     message="Actual hours significantly exceed estimated hours - consider reviewing estimation process",
-                    severity='info',
+                    severity=ValidationSeverity.INFO.value,
                     task_id=task.id
                 ))
         
-        return errors
+        return results
     
     def _validate_agent_assignment(self, task: Task) -> List[ValidationError]:
         """Validate agent assignment with auto-migration suggestions"""
-        errors = []
+        results = []
         
-        if task.agent and task.agent not in self.agent_names:
+        if task.agent and task.agent not in AGENT_CAPABILITIES:
             # Try to suggest an appropriate agent
             suggested_agent = self._suggest_agent_migration(task.agent, task)
             if suggested_agent:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='agent',
                     message=f"Unknown agent '{task.agent}'. Suggested migration: '{suggested_agent}' (auto-fixable)",
-                    severity='warning',
+                    severity=ValidationSeverity.WARNING.value,
                     task_id=task.id
                 ))
             else:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='agent',
-                    message=f"Unknown agent '{task.agent}'. Valid agents: {', '.join(sorted(self._get_primary_agents()))}",
-                    severity='error',
+                    message=f"Unknown agent '{task.agent}'. Valid agents: {', '.join(sorted(AGENT_CAPABILITIES.keys()))}",
+                    severity=ValidationSeverity.ERROR.value,
                     task_id=task.id
                 ))
         
         # Validate agent-task compatibility
-        agent_task_compatibility = {
-            'DEVELOPER': ['implement', 'develop', 'code', 'build', 'programming', 'software'],
-            'TESTER': ['test', 'testing', 'qa', 'validation', 'quality'],
-            'ARCHITECT': ['design', 'architecture', 'system', 'structure', 'pattern'],
-            'DEVOPS': ['deploy', 'ops', 'ci/cd', 'pipeline', 'infrastructure'],
-            'ANALYST': ['analyze', 'analysis', 'research', 'investigate', 'study'],
-            'DESIGNER': ['design', 'ui', 'ux', 'interface', 'visual'],
-            'DOCUMENTER': ['document', 'docs', 'readme', 'guide', 'manual'],
-            'REVIEWER': ['review', 'audit', 'check', 'validate', 'inspect'],
-            'MANAGER': ['manage', 'coordinate', 'plan', 'organize', 'schedule'],
-            'RESEARCHER': ['research', 'investigate', 'study', 'explore', 'discover'],
-            'SECURITY': ['security', 'secure', 'audit', 'monitoring', 'vulnerability'],
-            'AUTOMATION': ['automate', 'script', 'tool', 'process', 'workflow'],
-            
-            # Legacy mappings
-            'CODEFORGE': ['implement', 'develop', 'code', 'build'],
-            'TESTCRAFTERPRO': ['test', 'testing', 'qa', 'validation'],
-        }
-        
-        if task.agent in agent_task_compatibility:
-            expected_keywords = agent_task_compatibility[task.agent]
+        if task.agent in AGENT_CAPABILITIES:
+            expected_keywords = AGENT_CAPABILITIES[task.agent]
             task_text = f"{task.title} {task.description}".lower()
             if not any(keyword in task_text for keyword in expected_keywords):
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='agent',
                     message=f"Task content may not match agent capabilities. Expected keywords: {', '.join(expected_keywords)}",
-                    severity='info',
+                    severity=ValidationSeverity.INFO.value,
                     task_id=task.id
                 ))
         
-        return errors
+        return results
     
     def _validate_dates(self, task: Task) -> List[ValidationError]:
         """Validate date fields"""
-        errors = []
+        results = []
         
         from datetime import timezone
         now = self._ensure_timezone_aware(datetime.now(timezone.utc))
@@ -276,20 +237,20 @@ class TaskValidator:
         # Validate created_at is not in the future (allow a small tolerance)
         created_at_aware = self._ensure_timezone_aware(task.created_at)
         if created_at_aware and created_at_aware > now + timedelta(seconds=5):
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='created_at',
                 message="Created date cannot be in the future",
-                severity='error',
+                severity=ValidationSeverity.ERROR.value,
                 task_id=task.id
             ))
         
         # Validate updated_at is not before created_at
         updated_at_aware = self._ensure_timezone_aware(task.updated_at)
         if created_at_aware and updated_at_aware and updated_at_aware < created_at_aware:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='updated_at',
                 message="Updated date cannot be before created date",
-                severity='error',
+                severity=ValidationSeverity.ERROR.value,
                 task_id=task.id
             ))
         
@@ -297,23 +258,23 @@ class TaskValidator:
         if task.due_date:
             due_date_aware = self._ensure_timezone_aware(task.due_date)
             if due_date_aware < now and task.status not in [TaskStatus.COMPLETE, TaskStatus.CANCELLED]:
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='due_date',
                     message="Task is overdue",
-                    severity='warning',
+                    severity=ValidationSeverity.WARNING.value,
                     task_id=task.id
                 ))
             
             # Check if due date is too far in the future (more than 1 year)
             if due_date_aware > now.replace(year=now.year + 1):
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='due_date',
                     message="Due date is more than 1 year in the future - consider breaking into smaller tasks",
-                    severity='info',
+                    severity=ValidationSeverity.INFO.value,
                     task_id=task.id
                 ))
         
-        return errors
+        return results
     
     def _ensure_timezone_aware(self, dt):
         from datetime import timezone
@@ -323,40 +284,40 @@ class TaskValidator:
     
     def _validate_task_dependencies(self, task: Task) -> List[ValidationError]:
         """Validate task dependencies"""
-        errors = []
+        results = []
         
         if not task.dependencies:
-            return errors
+            return results
         
         # Check for self-dependency
         if task.id in task.dependencies:
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='dependencies',
                 message="Task cannot depend on itself",
-                severity='error',
+                severity=ValidationSeverity.ERROR.value,
                 task_id=task.id
             ))
         
         # Check for duplicate dependencies
         if len(task.dependencies) != len(set(task.dependencies)):
-            errors.append(ValidationError(
+            results.append(ValidationError(
                 field='dependencies',
                 message="Duplicate dependencies found",
-                severity='warning',
+                severity=ValidationSeverity.WARNING.value,
                 task_id=task.id
             ))
         
         # Validate dependency ID formats
         for dep_id in task.dependencies:
             if not self.validation_rules['id_pattern'].match(dep_id):
-                errors.append(ValidationError(
+                results.append(ValidationError(
                     field='dependencies',
-                    message=f"Invalid dependency ID format: '{dep_id}'",
-                    severity='error',
+                    message=f"Invalid dependency ID format: '{dep_id}'.",
+                    severity=ValidationSeverity.ERROR.value,
                     task_id=task.id
                 ))
         
-        return errors
+        return results
     
     def _suggest_agent_migration(self, unknown_agent: str, task: Task) -> Optional[str]:
         """Suggest an appropriate agent for migration based on task content and agent mapping"""
@@ -400,20 +361,7 @@ class TaskValidator:
         # Fallback: analyze task content to suggest appropriate agent
         task_text = f"{task.title} {task.description}".lower()
         
-        content_mappings = {
-            'DEVELOPER': ['code', 'implement', 'develop', 'build', 'programming', 'software'],
-            'TESTER': ['test', 'testing', 'qa', 'validation', 'quality'],
-            'ARCHITECT': ['design', 'architecture', 'system', 'structure', 'pattern'],
-            'DEVOPS': ['deploy', 'ops', 'ci/cd', 'pipeline', 'infrastructure'],
-            'ANALYST': ['analyze', 'analysis', 'research', 'investigate', 'study'],
-            'DESIGNER': ['design', 'ui', 'ux', 'interface', 'visual'],
-            'DOCUMENTER': ['document', 'docs', 'readme', 'guide', 'manual'],
-            'REVIEWER': ['review', 'audit', 'check', 'validate', 'inspect'],
-            'MANAGER': ['manage', 'coordinate', 'plan', 'organize', 'schedule'],
-            'RESEARCHER': ['research', 'investigate', 'study', 'explore', 'discover'],
-            'SECURITY': ['security', 'secure', 'audit', 'monitoring', 'vulnerability'],
-            'AUTOMATION': ['automate', 'script', 'tool', 'process', 'workflow'],
-        }
+        content_mappings = AGENT_CAPABILITIES
         
         # Score each agent based on keyword matches
         agent_scores = {}
@@ -428,44 +376,50 @@ class TaskValidator:
         
         return 'DEVELOPER'  # Default fallback
     
-    def _get_primary_agents(self) -> Set[str]:
-        """Get the primary (non-legacy) agent names"""
-        legacy_agents = {'CODEFORGE', 'TESTCRAFTERPRO', 'BUILDFLOW', 'AUTOSYNTH'}
-        return self.agent_names - legacy_agents
-    
     def auto_fix_agent_issues(self, tasks: Dict[str, Task]) -> Dict[str, str]:
         """Automatically fix agent assignment issues and return mapping of changes"""
         fixes = {}
         
         for task in tasks.values():
-            if task.agent and task.agent not in self.agent_names:
+            if task.agent and task.agent not in AGENT_CAPABILITIES:
                 suggested_agent = self._suggest_agent_migration(task.agent, task)
                 if suggested_agent:
                     old_agent = task.agent
                     task.agent = suggested_agent
                     fixes[task.id] = f"{old_agent} -> {suggested_agent}"
-                    logger.info(f"Auto-migrated task {task.id} agent: {old_agent} -> {suggested_agent}")
+                    # logger.info(f"Auto-migrated task {task.id} agent: {old_agent} -> {suggested_agent}")
         
         return fixes
     
-    def validate_task_system(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def validate_task_system(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate the entire task system for consistency"""
-        errors = []
+        all_warnings = []
+        all_errors = []
         
         # Validate individual tasks first
         for task in tasks.values():
-            task_errors = self.validate_task(task)
-            errors.extend(task_errors)
+            warnings, errors = self.validate_task(task)
+            all_warnings.extend(warnings)
+            all_errors.extend(errors)
         
         # Validate system-wide constraints
-        errors.extend(self._validate_system_dependencies(tasks))
-        errors.extend(self._validate_system_consistency(tasks))
-        errors.extend(self._validate_agent_workload(tasks))
+        system_warnings, system_errors = self._validate_system_dependencies(tasks)
+        all_warnings.extend(system_warnings)
+        all_errors.extend(system_errors)
+
+        system_warnings, system_errors = self._validate_system_consistency(tasks)
+        all_warnings.extend(system_warnings)
+        all_errors.extend(system_errors)
+
+        system_warnings, system_errors = self._validate_agent_workload(tasks)
+        all_warnings.extend(system_warnings)
+        all_errors.extend(system_errors)
         
-        return errors
+        return all_warnings, all_errors
     
-    def _validate_system_dependencies(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def _validate_system_dependencies(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate dependencies across the entire system"""
+        warnings = []
         errors = []
         
         # Check for missing dependency targets
@@ -476,7 +430,7 @@ class TaskValidator:
                     errors.append(ValidationError(
                         field='dependencies',
                         message=f"Dependency '{dep_id}' does not exist",
-                        severity='error',
+                        severity=ValidationSeverity.ERROR.value,
                         task_id=task.id
                     ))
         
@@ -487,14 +441,15 @@ class TaskValidator:
             errors.append(ValidationError(
                 field='dependencies',
                 message=f"Circular dependency detected: {cycle_str}",
-                severity='error',
+                severity=ValidationSeverity.ERROR.value,
                 task_id=cycle[0]
             ))
         
-        return errors
+        return warnings, errors
     
-    def _validate_system_consistency(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def _validate_system_consistency(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate system-wide consistency"""
+        warnings = []
         errors = []
         
         # Check for orphaned tasks (no incoming dependencies)
@@ -510,10 +465,10 @@ class TaskValidator:
                 orphaned_tasks.append(task_id)
         
         if len(orphaned_tasks) > len(tasks) * 0.5:  # More than 50% orphaned
-            errors.append(ValidationError(
+            warnings.append(ValidationError(
                 field='system',
                 message=f"High number of orphaned tasks ({len(orphaned_tasks)}). Consider reviewing task organization.",
-                severity='info'
+                severity=ValidationSeverity.INFO.value
             ))
         
         # Check for status inconsistencies
@@ -523,46 +478,47 @@ class TaskValidator:
                 blocked_without_deps.append(task.id)
         
         if blocked_without_deps:
-            errors.append(ValidationError(
+            warnings.append(ValidationError(
                 field='status',
                 message=f"Tasks blocked without dependencies: {', '.join(blocked_without_deps)}",
-                severity='warning'
+                severity=ValidationSeverity.WARNING.value
             ))
         
-        return errors
+        return warnings, errors
     
-    def _validate_agent_workload(self, tasks: Dict[str, Task]) -> List[ValidationError]:
+    def _validate_agent_workload(self, tasks: Dict[str, Task]) -> Tuple[List[ValidationError], List[ValidationError]]:
         """Validate agent workload distribution"""
+        warnings = []
         errors = []
         
         # Count active tasks per agent
         agent_workload = {}
-        for task in tasks.values():
+        for task in self.task_manager.tasks_cache.values():
             if task.status in [TaskStatus.TODO, TaskStatus.IN_PROGRESS]:
                 agent_workload[task.agent] = agent_workload.get(task.agent, 0) + 1
         
         # Check for overloaded agents (more than 10 active tasks)
         for agent, count in agent_workload.items():
             if count > 10:
-                errors.append(ValidationError(
+                warnings.append(ValidationError(
                     field='agent',
                     message=f"Agent '{agent}' has {count} active tasks - consider redistributing workload",
-                    severity='warning'
+                    severity=ValidationSeverity.WARNING.value
                 ))
         
         # Check for idle agents (no active tasks)
         active_agents = set(agent_workload.keys())
-        all_agents_with_tasks = set(task.agent for task in tasks.values())
+        all_agents_with_tasks = set(task.agent for task in self.task_manager.tasks_cache.values())
         idle_agents = all_agents_with_tasks - active_agents
         
         if idle_agents:
-            errors.append(ValidationError(
+            warnings.append(ValidationError(
                 field='agent',
                 message=f"Agents with no active tasks: {', '.join(idle_agents)}",
-                severity='info'
+                severity=ValidationSeverity.INFO.value
             ))
         
-        return errors
+        return warnings, errors
     
     def _find_circular_dependencies(self, tasks: Dict[str, Task]) -> List[List[str]]:
         """Find circular dependencies in the task system"""
@@ -598,19 +554,22 @@ class TaskValidator:
         
         return cycles
     
-    def generate_validation_report(self, errors: List[ValidationError]) -> str:
+    def generate_validation_report(self, warnings: List[ValidationError], errors: List[ValidationError]) -> str:
         """Generate a human-readable validation report"""
-        if not errors:
+        total_issues = len(warnings) + len(errors)
+        if total_issues == 0:
             return "✅ All validations passed successfully!"
         
         report = []
-        report.append(f"🔍 Task Validation Report - {len(errors)} issues found")
+        report.append(f"🔍 Task Validation Report - {total_issues} issues found")
         report.append("=" * 50)
         
         # Group by severity
         by_severity = {'error': [], 'warning': [], 'info': []}
         for error in errors:
             by_severity[error.severity].append(error)
+        for warning in warnings:
+            by_severity[warning.severity].append(warning)
         
         for severity in ['error', 'warning', 'info']:
             issues = by_severity[severity]
@@ -621,8 +580,8 @@ class TaskValidator:
             report.append(f"\n{icon} {severity.upper()} ({len(issues)} issues)")
             report.append("-" * 30)
             
-            for error in issues:
-                task_info = f" (Task: {error.task_id})" if error.task_id else ""
-                report.append(f"  • {error.field}: {error.message}{task_info}")
+            for issue in issues:
+                task_info = f" (Task: {issue.task_id})" if issue.task_id else ""
+                report.append(f"  • {issue.field}: {issue.message}{task_info}")
         
         return "\n".join(report)

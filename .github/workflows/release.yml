@@ -1,0 +1,284 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  validate-release:
+    name: 🔍 Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ Get version from tag or input
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # Check if this is a prerelease
+          if [[ $VERSION =~ (alpha|beta|rc) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Release version: $VERSION"
+          echo "Is prerelease: $(echo $VERSION | grep -E '(alpha|beta|rc)' && echo true || echo false)"
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ✅ Validate task system
+        run: |
+          python -m src.task_management.cli validate
+
+      - name: 📊 Generate release analytics
+        run: |
+          python -m src.task_management.cli analytics --type overview --output release-analytics.json
+          
+      - name: 📊 Upload release analytics
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-analytics
+          path: release-analytics.json
+
+  build-package:
+    name: 🏗️ Build Package
+    runs-on: ubuntu-latest
+    needs: validate-release
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📦 Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build wheel setuptools twine
+
+      - name: 🏗️ Build distributions
+        run: |
+          python -m build
+
+      - name: 🔍 Check distributions
+        run: |
+          python -m twine check dist/*
+
+      - name: 📊 Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  test-package:
+    name: 🧪 Test Package
+    runs-on: ubuntu-latest
+    needs: build-package
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - name: 📥 Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: 🐍 Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 📦 Install package from wheel
+        run: |
+          pip install dist/*.whl
+
+      - name: 🧪 Test package installation
+        run: |
+          python -c "import src.task_management; print('Package imported successfully')"
+
+  security-check:
+    name: 🔒 Security Check
+    runs-on: ubuntu-latest
+    needs: build-package
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 🔒 Security scan
+        run: |
+          pip install bandit safety
+          bandit -r src/ -f json -o bandit-release-report.json
+          safety check
+
+      - name: 📊 Upload security report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-release-report
+          path: bandit-release-report.json
+
+  generate-changelog:
+    name: 📝 Generate Changelog
+    runs-on: ubuntu-latest
+    needs: validate-release
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📝 Generate changelog
+        run: |
+          python -m src.task_management.cli changelog --version ${{ needs.validate-release.outputs.version }} --output CHANGELOG-${{ needs.validate-release.outputs.version }}.md
+
+      - name: 📊 Upload changelog
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: CHANGELOG-${{ needs.validate-release.outputs.version }}.md
+
+  create-release:
+    name: 🚀 Create Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-package, test-package, security-check, generate-changelog]
+    permissions:
+      contents: write
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: 📝 Prepare release notes
+        run: |
+          echo "# Release ${{ needs.validate-release.outputs.version }}" > release-notes.md
+          echo "" >> release-notes.md
+          echo "## 🎉 What's New" >> release-notes.md
+          echo "" >> release-notes.md
+          
+          if [ -f "changelog/CHANGELOG-${{ needs.validate-release.outputs.version }}.md" ]; then
+            cat "changelog/CHANGELOG-${{ needs.validate-release.outputs.version }}.md" >> release-notes.md
+          else
+            echo "- Automated release of Agent Task Management System" >> release-notes.md
+            echo "- See commit history for detailed changes" >> release-notes.md
+          fi
+          
+          echo "" >> release-notes.md
+          echo "## 📊 Release Metrics" >> release-notes.md
+          echo "" >> release-notes.md
+          
+          if [ -f "release-analytics/release-analytics.json" ]; then
+            echo "- Task system validation: ✅ Passed" >> release-notes.md
+            echo "- Security scan: ✅ Completed" >> release-notes.md
+            echo "- Multi-version testing: ✅ Python 3.10, 3.11, 3.12" >> release-notes.md
+          fi
+          
+          echo "" >> release-notes.md
+          echo "## 📦 Installation" >> release-notes.md
+          echo "" >> release-notes.md
+          echo '```bash' >> release-notes.md
+          echo 'git clone https://github.com/adrianwedd/agent-task-management-system.git' >> release-notes.md
+          echo 'cd agent-task-management-system' >> release-notes.md
+          echo 'pip install -r requirements.txt' >> release-notes.md
+          echo 'python -m src.task_management.cli --help' >> release-notes.md
+          echo '```' >> release-notes.md
+
+      - name: 🚀 Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.validate-release.outputs.version }}
+          name: Release ${{ needs.validate-release.outputs.version }}
+          body_path: release-notes.md
+          prerelease: ${{ needs.validate-release.outputs.is_prerelease == 'true' }}
+          files: |
+            python-package-distributions/*
+            release-analytics/release-analytics.json
+            security-release-report/bandit-release-report.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-success:
+    name: 🎉 Notify Success
+    runs-on: ubuntu-latest
+    needs: [validate-release, create-release]
+    if: success()
+    steps:
+      - name: 🎉 Success notification
+        run: |
+          echo "🎉 Release ${{ needs.validate-release.outputs.version }} created successfully!"
+          echo "📦 Package built and tested across Python 3.10, 3.11, 3.12"
+          echo "🔒 Security checks passed"
+          echo "✅ Task system validation passed"
+          echo "📝 Changelog generated"
+          echo "🚀 GitHub release created"
+
+  notify-failure:
+    name: ❌ Notify Failure
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-package, test-package, security-check, generate-changelog, create-release]
+    if: failure()
+    steps:
+      - name: ❌ Failure notification
+        run: |
+          echo "❌ Release pipeline failed for version ${{ needs.validate-release.outputs.version }}"
+          echo "Please check the logs and fix any issues before retrying the release."

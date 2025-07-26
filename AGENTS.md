@@ -26,6 +26,7 @@ This file provides guidance to AI agents working with the **Agent Task Managemen
   ```
 - **Recommended workflow**: run validation before committing changes to ensure
   data integrity.
+
 - **Run analytics**:
   ```bash
   python -m src.task_management.cli analytics

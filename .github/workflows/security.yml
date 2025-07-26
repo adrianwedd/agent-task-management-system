@@ -1,0 +1,226 @@
+name: Security and Dependency Monitoring
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'requirements.txt'
+      - '.github/workflows/security.yml'
+
+jobs:
+  dependency-scan:
+    name: 🔍 Dependency Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 📦 Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install safety bandit pip-audit
+
+      - name: 🔒 Check for known security vulnerabilities
+        run: |
+          safety check --json --output safety-report.json || true
+          safety check --continue-on-error
+
+      - name: 🔍 Audit package vulnerabilities
+        run: |
+          pip-audit --format=json --output=pip-audit-report.json || true
+          pip-audit
+
+      - name: 🛡️ Run Bandit security linter
+        run: |
+          bandit -r src/ -f json -o bandit-security-report.json || true
+          bandit -r src/
+
+      - name: 📊 Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            safety-report.json
+            pip-audit-report.json
+            bandit-security-report.json
+
+  license-check:
+    name: 📄 License Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 📦 Install license checker
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-licenses licensecheck
+
+      - name: 📄 Check dependency licenses
+        run: |
+          pip install -r requirements.txt
+          pip-licenses --format=json --output-file=licenses-report.json
+          pip-licenses --format=markdown --output-file=licenses-report.md
+
+      - name: 📊 Upload license reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-reports
+          path: |
+            licenses-report.json
+            licenses-report.md
+
+  code-quality-scan:
+    name: 🔬 Code Quality Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 📦 Install analysis tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install radon complexity-checker vulture
+
+      - name: 📊 Analyze code complexity
+        run: |
+          radon cc src/ --json --output-file=complexity-report.json
+          radon cc src/ --show-complexity --min=B
+
+      - name: 🔍 Find dead code
+        run: |
+          vulture src/ --json > dead-code-report.json || true
+          vulture src/ --min-confidence 80
+
+      - name: 📊 Upload quality reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          path: |
+            complexity-report.json
+            dead-code-report.json
+
+  docker-security:
+    name: 🐳 Docker Security Scan
+    runs-on: ubuntu-latest
+    if: false  # Disabled until Dockerfile is created
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Build Docker image
+        run: |
+          docker build -t task-management-system:latest .
+
+      - name: 🔒 Scan Docker image
+        uses: anchore/scan-action@v3
+        with:
+          image: task-management-system:latest
+          format: json
+          output-file: docker-security-report.json
+
+      - name: 📊 Upload Docker security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-security-report
+          path: docker-security-report.json
+
+  security-summary:
+    name: 📋 Security Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, license-check, code-quality-scan]
+    if: always()
+    steps:
+      - name: 📥 Download all reports
+        uses: actions/download-artifact@v4
+
+      - name: 📋 Generate security summary
+        run: |
+          echo "# 🔒 Security and Quality Summary" > security-summary.md
+          echo "Generated on: $(date)" >> security-summary.md
+          echo "" >> security-summary.md
+          
+          echo "## 🔍 Scan Results" >> security-summary.md
+          echo "- **Dependency Security**: ${{ needs.dependency-scan.result }}" >> security-summary.md
+          echo "- **License Compliance**: ${{ needs.license-check.result }}" >> security-summary.md
+          echo "- **Code Quality**: ${{ needs.code-quality-scan.result }}" >> security-summary.md
+          echo "" >> security-summary.md
+          
+          echo "## 📊 Reports Generated" >> security-summary.md
+          echo "- Safety vulnerability scan" >> security-summary.md
+          echo "- Pip-audit security audit" >> security-summary.md
+          echo "- Bandit security linting" >> security-summary.md
+          echo "- License compliance check" >> security-summary.md
+          echo "- Code complexity analysis" >> security-summary.md
+          echo "- Dead code detection" >> security-summary.md
+          echo "" >> security-summary.md
+          
+          if [[ "${{ needs.dependency-scan.result }}" == "failure" || \
+                "${{ needs.license-check.result }}" == "failure" || \
+                "${{ needs.code-quality-scan.result }}" == "failure" ]]; then
+            echo "## ⚠️ Action Required" >> security-summary.md
+            echo "One or more security scans detected issues that require attention." >> security-summary.md
+            echo "Please review the detailed reports and address any critical findings." >> security-summary.md
+          else
+            echo "## ✅ All Clear" >> security-summary.md
+            echo "No critical security issues detected in automated scans." >> security-summary.md
+          fi
+
+      - name: 📊 Upload security summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-summary
+          path: security-summary.md
+
+      - name: 🚨 Create issue for security findings
+        if: needs.dependency-scan.result == 'failure' || needs.license-check.result == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 Security Scan Alert';
+            const body = `
+            # Security Scan Results
+            
+            Automated security scans have detected potential issues that require review.
+            
+            ## Scan Results
+            - Dependency Security: ${{ needs.dependency-scan.result }}
+            - License Compliance: ${{ needs.license-check.result }}
+            - Code Quality: ${{ needs.code-quality-scan.result }}
+            
+            ## Next Steps
+            1. Review the detailed reports in the workflow artifacts
+            2. Address any critical security vulnerabilities
+            3. Update dependencies if necessary
+            4. Verify license compliance
+            
+            This issue was automatically generated by the security monitoring workflow.
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['security', 'automated', 'priority:high']
+            });

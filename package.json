@@ -1,0 +1,27 @@
+{
+  "name": "agent-task-management-system",
+  "version": "1.0.0",
+  "description": "A comprehensive, intelligent task management system designed for agent-based workflows with advanced automation, emoji-enhanced organization, and powerful CLI tools.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint:md": "markdownlint **/*.md",
+    "lint:py": "python -m pylint src/**/*.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adrianwedd/agent-task-management-system.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/adrianwedd/agent-task-management-system/issues"
+  },
+  "homepage": "https://github.com/adrianwedd/agent-task-management-system#readme"
+}
